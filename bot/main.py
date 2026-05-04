@@ -1,0 +1,59 @@
+import asyncio
+import logging
+
+from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from aiogram.types import BotCommand
+
+import config
+import database.db as db
+from bot.handlers import router
+from bot.notifier import run_notifier
+from utils.logger import setup_logging
+
+logger = logging.getLogger(__name__)
+
+_COMMANDS = [
+    BotCommand(command="rate", description="💼 Все курсы банков"),
+    BotCommand(command="top", description="🏆 Топ-3 лучших"),
+    BotCommand(command="history", description="📜 История изменений"),
+    BotCommand(command="set_threshold", description="⚡ Порог уведомления"),
+    BotCommand(command="notify", description="🔔 Вкл/выкл уведомления"),
+    BotCommand(command="status", description="⚙️ Ваши настройки"),
+]
+
+
+async def main() -> None:
+    setup_logging(config.LOG_LEVEL)
+    logger.info("Запуск бота...")
+
+    if not config.BOT_TOKEN:
+        logger.critical("BOT_TOKEN не задан! Установите .env файл.")
+        return
+
+    await db.init_db()
+    logger.info("База данных инициализирована")
+
+    bot = Bot(
+        token=config.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+
+    dp = Dispatcher()
+    dp.include_router(router)
+
+    await bot.set_my_commands(_COMMANDS)
+
+    notifier_task = asyncio.create_task(run_notifier(bot))
+
+    try:
+        logger.info("Бот запущен. Для остановки нажмите Ctrl+C.")
+        await dp.start_polling(bot)
+    finally:
+        notifier_task.cancel()
+        try:
+            await notifier_task
+        except asyncio.CancelledError:
+            pass
+        await bot.session.close()
