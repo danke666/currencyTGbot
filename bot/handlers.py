@@ -12,6 +12,7 @@ from services.rate_service import (
     format_all_rates,
     format_top_rates,
     format_history,
+    get_best_rate,
 )
 from services.parser import parse_bank_rates
 from bot.callbacks import ActionCallback
@@ -29,7 +30,8 @@ _START_TEXT = (
     "/top — топ-3 лучших\n\n"
     "🔔 <b>Уведомления:</b>\n"
     "/notify — вкл/выкл\n"
-    "/set_threshold — порог (при курсе ≤ порога)\n\n"
+    "/set_threshold — порог (при курсе ≤ порога)\n"
+    "/off_threshold — сбросить порог\n\n"
     "⚙️ <b>Другое:</b>\n"
     "/history — история изменений\n"
     "/status — ваши настройки"
@@ -44,6 +46,12 @@ async def cmd_start(message: Message) -> None:
         await message.answer(_START_TEXT, parse_mode="HTML")
         return
     await db.add_user(user_id)
+
+    result = await get_best_rate(config.PARSER_URL)
+    if result:
+        await db.save_rate(result.bank, result.rate)
+        await db.cleanup_rate_history()
+
     await message.answer(_START_TEXT, parse_mode="HTML")
 
 
@@ -115,6 +123,19 @@ async def cmd_set_threshold(message: Message) -> None:
         f"Уведомлю, когда курс ≤ {threshold}",
         parse_mode="HTML",
     )
+
+
+@router.message(Command("off_threshold"))
+async def cmd_off_threshold(message: Message) -> None:
+    user_id = message.from_user.id
+    existing = await db.get_user(user_id)
+    if not existing:
+        await db.add_user(user_id)
+        await message.answer("Порог не был установлен.")
+        return
+
+    await db.clear_threshold(user_id)
+    await message.answer("❌ Порог уведомления <b>сброшен</b>.", parse_mode="HTML")
 
 
 @router.message(Command("notify"))

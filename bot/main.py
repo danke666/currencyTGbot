@@ -9,7 +9,8 @@ from aiogram.types import BotCommand
 import config
 import database.db as db
 from bot.handlers import router
-from bot.notifier import run_notifier
+from bot.notifier import run_notifier, stop_notifier
+from services.parser import close_session
 from utils.logger import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ _COMMANDS = [
     BotCommand(command="top", description="🏆 Топ-3 лучших"),
     BotCommand(command="history", description="📜 История изменений"),
     BotCommand(command="set_threshold", description="⚡ Порог уведомления"),
+    BotCommand(command="off_threshold", description="❌ Сбросить порог"),
     BotCommand(command="notify", description="🔔 Вкл/выкл уведомления"),
     BotCommand(command="status", description="⚙️ Ваши настройки"),
 ]
@@ -51,9 +53,14 @@ async def main() -> None:
         logger.info("Бот запущен. Для остановки нажмите Ctrl+C.")
         await dp.start_polling(bot)
     finally:
+        logger.info("Остановка бота...")
+        stop_notifier()
         notifier_task.cancel()
         try:
             await notifier_task
         except asyncio.CancelledError:
             pass
+        await close_session()
+        await db.close_db()
         await bot.session.close()
+        logger.info("Бот остановлен.")

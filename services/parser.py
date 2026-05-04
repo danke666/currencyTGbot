@@ -10,7 +10,6 @@ import config
 
 logger = logging.getLogger(__name__)
 
-_PARSER_URL = config.PARSER_URL
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -20,6 +19,22 @@ _HEADERS = {
     "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
+
+_session: aiohttp.ClientSession | None = None
+
+
+async def get_session() -> aiohttp.ClientSession:
+    global _session
+    if _session is None or _session.closed:
+        _session = aiohttp.ClientSession(headers=_HEADERS, timeout=_TIMEOUT)
+    return _session
+
+
+async def close_session() -> None:
+    global _session
+    if _session and not _session.closed:
+        await _session.close()
+        _session = None
 
 
 @dataclass
@@ -57,12 +72,8 @@ def extract_bank_rates_from_html(html: str) -> list[BankRate]:
         if not bank_name_el:
             bank_name_el = container.select_one("a[href*='/bank/']")
 
-        buy_el = container.select_one(
-            "[class*='buy'], [class*='purchase']"
-        )
-        sell_el = container.select_one(
-            "[class*='sell'], [class*='sale']"
-        )
+        buy_el = container.select_one("[class*='buy'], [class*='purchase']")
+        sell_el = container.select_one("[class*='sell'], [class*='sale']")
 
         if not sell_el:
             rate_cells = container.select("td")
@@ -71,8 +82,6 @@ def extract_bank_rates_from_html(html: str) -> list[BankRate]:
                 buy_el = rate_cells[-2]
             else:
                 buy_el = None
-        else:
-            buy_el = buy_el
 
         bank_name = bank_name_el.get_text(strip=True) if bank_name_el else None
         if not bank_name:
@@ -84,9 +93,18 @@ def extract_bank_rates_from_html(html: str) -> list[BankRate]:
         rates.append(BankRate(bank=bank_name, buy=buy_rate, sell=sell_rate))
 
     if rates:
-        return rates
+        return _deduplicate(rates)
 
-    return _extract_from_general_html(soup)
+    return _deduplicate(_extract_from_general_html(soup))
+
+
+def _deduplicate(rates: list[BankRate]) -> list[BankRate]:
+    seen: dict[str, BankRate] = {}
+    for r in rates:
+        key = r.bank.strip().lower()
+        if key not in seen:
+            seen[key] = r
+    return list(seen.values())
 
 
 def _extract_from_general_html(soup: BeautifulSoup) -> list[BankRate]:
@@ -137,33 +155,29 @@ def _extract_from_general_html(soup: BeautifulSoup) -> list[BankRate]:
     return rates
 
 
-async def fetch_page(url: str | None = None, session: aiohttp.ClientSession | None = None) -> str:
-    target_url = url or _PARSER_URL
-    should_close = False
+async def fetch_page(url: str | None = None) -> str:
+    target_url = url or config.PARSER_URL
+    session = await get_session()
 
-    if session is None:
-        session = aiohttp.ClientSession(headers=_HEADERS, timeout=_TIMEOUT)
-        should_close = True
-
-    try:
-        for attempt in range(3):
-            try:
-                async with session.get(target_url) as response:
-                    response.raise_for_status()
-                    return await response.text()
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                logger.warning("Попытка %d не удалась для %s: %s", attempt + 1, target_url, exc)
-                if attempt == 2:
-                    raise
-                await asyncio.sleep(2 * (attempt + 1))
-        return ""
-    finally:
-        if should_close:
-            await session.close()
+    for attempt in range(3):
+        try:
+            async with session.get(target_url) as response:
+                response.raise_for_status()
+                return await response.text()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.warning("Попытка %d не удалась для %s: %s", attempt + 1, target_url, exc)
+            if attempt == 2:
+                raise
+            await asyncio.sleep(2 * (attempt + 1))
+    return ""
 
 
 async def parse_bank_rates(url: str | None = None) -> list[BankRate]:
-    html = await fetch_page(url)
+    try:
+        html = await fetch_page(url)
+    except Exception:
+        logger.exception("Ошибка при загрузке страницы")
+        return []
     if not html:
         logger.error("Пустой ответ от сервера")
         return []
@@ -171,12 +185,3 @@ async def parse_bank_rates(url: str | None = None) -> list[BankRate]:
     if not rates:
         logger.warning("Не удалось извлечь курсы из HTML")
     return rates
-
-
-def get_all_rates_text(rates: list[BankRate]) -> str:
-    lines = []
-    for r in rates:
-        buy = f"{r.buy}" if r.buy is not None else "—"
-        sell = f"{r.sell}" if r.sell is not None else "—"
-        lines.append(f"  {r.bank}: покупка {buy} / продажа {sell}")
-    return "\n".join(lines)

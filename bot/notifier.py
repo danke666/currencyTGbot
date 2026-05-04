@@ -9,21 +9,36 @@ from services.rate_service import BestRate, format_rate_info, parse_bank_rates
 
 logger = logging.getLogger(__name__)
 
+_stop_event = asyncio.Event()
+
 
 async def _send_to_all(bot: Bot, user_ids: list[int], text: str) -> None:
     for uid in user_ids:
+        if _stop_event.is_set():
+            return
         try:
             await bot.send_message(uid, text, parse_mode="HTML")
         except Exception:
             logger.exception("Не удалось отправить уведомление user_id=%s", uid)
 
 
+def stop_notifier() -> None:
+    _stop_event.set()
+
+
 async def run_notifier(bot: Bot) -> None:
     interval = config.CHECK_INTERVAL_MINUTES * 60
     logger.info("Notifier запущен (интервал: %d мин.)", config.CHECK_INTERVAL_MINUTES)
 
-    while True:
-        await asyncio.sleep(interval)
+    while not _stop_event.is_set():
+        try:
+            await asyncio.wait_for(asyncio.sleep(interval), timeout=interval + 5)
+        except asyncio.CancelledError:
+            break
+
+        if _stop_event.is_set():
+            break
+
         try:
             rates = await parse_bank_rates(config.PARSER_URL)
             if not rates:
@@ -40,6 +55,7 @@ async def run_notifier(bot: Bot) -> None:
 
             last = await db.get_last_rate()
             await db.save_rate(result.bank, result.rate)
+            await db.cleanup_rate_history()
 
             users = await db.get_active_users()
             if not users:
@@ -65,6 +81,8 @@ async def run_notifier(bot: Bot) -> None:
 
             threshold_user_ids: set[int] = set()
             for user in users:
+                if _stop_event.is_set():
+                    return
                 threshold = user["threshold"]
                 if threshold and result.rate <= threshold:
                     threshold_user_ids.add(user["user_id"])
