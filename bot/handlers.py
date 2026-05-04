@@ -3,6 +3,7 @@ import logging
 from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
+from aiogram.exceptions import TelegramBadRequest
 
 import config
 import database.db as db
@@ -182,7 +183,10 @@ async def process_action_callback(callback: CallbackQuery, callback_data: Action
             await callback.answer()
             return
         text = format_top_rates(rates)
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=rate_actions_keyboard())
+        try:
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=rate_actions_keyboard())
+        except TelegramBadRequest:
+            pass
         await callback.answer()
 
     elif action == "history":
@@ -191,7 +195,10 @@ async def process_action_callback(callback: CallbackQuery, callback_data: Action
             await callback.answer("Пока нет данных по истории", show_alert=True)
             return
         text = format_history(history)
-        await callback.message.edit_text(text, parse_mode="HTML")
+        try:
+            await callback.message.edit_text(text, parse_mode="HTML")
+        except TelegramBadRequest:
+            pass
         await callback.answer()
 
     else:
