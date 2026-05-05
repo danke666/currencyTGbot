@@ -8,51 +8,160 @@ from aiogram.exceptions import TelegramBadRequest
 import config
 import database.db as db
 from services.rate_service import (
-    format_rate_info,
     format_all_rates,
     format_top_rates,
     format_history,
-    get_best_rate,
+    format_settings_text,
+    paginate,
 )
 from services.parser import parse_bank_rates
-from bot.callbacks import ActionCallback
-from bot.keyboards import rate_actions_keyboard
+from bot.callbacks import MenuCallback, PageCallback, SettingsCallback
+from bot.keyboards import (
+    main_reply_keyboard,
+    pagination_keyboard,
+    rate_keyboard,
+    top_keyboard,
+    history_keyboard,
+    settings_keyboard,
+)
 
 logger = logging.getLogger(__name__)
 
 router = Router()
 
-_START_TEXT = (
-    "👋 <b>Добро пожаловать!</b>\n"
-    "Бот отслеживает лучший курс покупки USD за RUB в Гомеле.\n\n"
-    "📊 <b>Курсы:</b>\n"
-    "/rate — все банки\n"
-    "/top — топ-3 лучших\n\n"
-    "🔔 <b>Уведомления:</b>\n"
-    "/notify — вкл/выкл\n"
-    "/set_threshold — порог (при курсе ≤ порога)\n"
-    "/off_threshold — сбросить порог\n\n"
-    "⚙️ <b>Другое:</b>\n"
-    "/history — история изменений\n"
-    "/status — ваши настройки"
+_WELCOME_TEXT = (
+    "👋 <b>Курс USD/RUB · Гомель</b>\n\n"
+    "Бот находит лучший курс покупки долларов за рубли "
+    "и уведомляет при изменениях.\n\n"
+    "Нажмите кнопку ниже или используйте команды 👇"
 )
+
+
+
+
+async def _safe_delete(message: Message) -> None:
+    try:
+        await message.delete()
+    except TelegramBadRequest as exc:
+        # Expected errors: message already deleted, no permission
+        if "message to delete not found" not in str(exc).lower() and "message can't be deleted" not in str(exc).lower():
+            logger.warning("Unexpected delete error: %s", exc)
+    except Exception:
+        logger.debug("Delete error", exc_info=True)
+
+
+async def _safe_edit_text(message: Message, text: str, reply_markup=None) -> bool:
+    """Edit message text, return True on success. Log unexpected errors."""
+    try:
+        await message.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        return True
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return True  # Not an error
+        logger.warning("Edit text error: %s", exc)
+        return False
+    except Exception:
+        logger.exception("Unexpected edit text error")
+        return False
+
+
+async def _ensure_user(user_id: int) -> dict:
+    user = await db.get_user(user_id)
+    if not user:
+        await db.add_user(user_id)
+        user = await db.get_user(user_id)
+    return user
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
+    await _ensure_user(message.from_user.id)
+    await message.answer(
+        _WELCOME_TEXT,
+        parse_mode="HTML",
+        reply_markup=main_reply_keyboard(),
+    )
+    await _safe_delete(message)
+
+
+@router.message(Command("menu"))
+async def cmd_menu(message: Message) -> None:
+    await message.answer(_WELCOME_TEXT, parse_mode="HTML", reply_markup=main_reply_keyboard())
+    await _safe_delete(message)
+
+
+@router.message(F.text == "📊 Курсы")
+async def btn_rates(message: Message) -> None:
+    wait_msg = await message.answer("⏳ Получаю курсы...")
+    try:
+        rates = await parse_bank_rates(config.PARSER_URL)
+        if not rates:
+            await wait_msg.edit_text("Не удалось получить курсы. Попробуйте позже.")
+            return
+        _, total_pages = paginate([r for r in rates if r.sell is not None], 1)
+        text = format_all_rates(rates, page=1)
+        kb = rate_keyboard()
+        if total_pages > 1:
+            # Combine rate keyboard row with pagination
+            kb.inline_keyboard.extend(
+                pagination_keyboard("rate", 1, total_pages).inline_keyboard
+            )
+        await wait_msg.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        logger.exception("Ошибка при получении курсов")
+        await wait_msg.edit_text("Произошла ошибка. Попробуйте позже.")
+    finally:
+        await _safe_delete(message)
+
+
+@router.message(F.text == "🏆 Топ-3")
+async def btn_top(message: Message) -> None:
+    wait_msg = await message.answer("⏳ Получаю курсы...")
+    try:
+        rates = await parse_bank_rates(config.PARSER_URL)
+        if not rates:
+            await wait_msg.edit_text("Не удалось получить курсы. Попробуйте позже.")
+            return
+        text = format_top_rates(rates)
+        await wait_msg.edit_text(text, parse_mode="HTML", reply_markup=top_keyboard())
+    except Exception:
+        logger.exception("Ошибка при получении курсов")
+        await wait_msg.edit_text("Произошла ошибка. Попробуйте позже.")
+    finally:
+        await _safe_delete(message)
+
+
+@router.message(F.text == "📜 История")
+async def btn_history(message: Message) -> None:
+    history = await db.get_rate_history(limit=80)  # Fetch enough for pagination
+    if not history:
+        await message.answer("Пока нет данных. Курсы появятся после первой проверки.")
+    else:
+        _, total_pages = paginate(history, 1)
+        text = format_history(history, page=1)
+        kb = history_keyboard()
+        if total_pages > 1:
+            kb.inline_keyboard.extend(
+                pagination_keyboard("history", 1, total_pages).inline_keyboard
+            )
+        await message.answer(text, parse_mode="HTML", reply_markup=kb)
+    await _safe_delete(message)
+
+
+@router.message(F.text == "⚙️ Настройки")
+async def btn_settings(message: Message) -> None:
     user_id = message.from_user.id
-    existing = await db.get_user(user_id)
-    if existing:
-        await message.answer(_START_TEXT, parse_mode="HTML")
-        return
-    await db.add_user(user_id)
+    await _ensure_user(user_id)
+    user = await db.get_user(user_id)
 
-    result = await get_best_rate(config.PARSER_URL)
-    if result:
-        await db.save_rate(result.bank, result.rate)
-        await db.cleanup_rate_history()
-
-    await message.answer(_START_TEXT, parse_mode="HTML")
+    last_rate = await db.get_last_rate()
+    text = format_settings_text(user, last_rate, config.CHECK_INTERVAL_MINUTES)
+    await message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=settings_keyboard(bool(user["is_active"]), bool(user["threshold"])),
+    )
+    await _safe_delete(message)
 
 
 @router.message(Command("rate"))
@@ -63,36 +172,19 @@ async def cmd_rate(message: Message) -> None:
         if not rates:
             await wait_msg.edit_text("Не удалось получить курсы. Попробуйте позже.")
             return
-        text = format_all_rates(rates)
-        await wait_msg.edit_text(text, parse_mode="HTML", reply_markup=rate_actions_keyboard())
+        _, total_pages = paginate([r for r in rates if r.sell is not None], 1)
+        text = format_all_rates(rates, page=1)
+        kb = rate_keyboard()
+        if total_pages > 1:
+            kb.inline_keyboard.extend(
+                pagination_keyboard("rate", 1, total_pages).inline_keyboard
+            )
+        await wait_msg.edit_text(text, parse_mode="HTML", reply_markup=kb)
     except Exception:
         logger.exception("Ошибка при получении курсов")
         await wait_msg.edit_text("Произошла ошибка. Попробуйте позже.")
-
-
-@router.message(Command("top"))
-async def cmd_top(message: Message) -> None:
-    wait_msg = await message.answer("⏳ Получаю курсы...")
-    try:
-        rates = await parse_bank_rates(config.PARSER_URL)
-        if not rates:
-            await wait_msg.edit_text("Не удалось получить курсы. Попробуйте позже.")
-            return
-        text = format_top_rates(rates)
-        await wait_msg.edit_text(text, parse_mode="HTML")
-    except Exception:
-        logger.exception("Ошибка при получении курсов")
-        await wait_msg.edit_text("Произошла ошибка. Попробуйте позже.")
-
-
-@router.message(Command("history"))
-async def cmd_history(message: Message) -> None:
-    history = await db.get_rate_history(limit=10)
-    if not history:
-        await message.answer("Пока нет данных. Курсы появятся после первой проверки.")
-        return
-    text = format_history(history)
-    await message.answer(text, parse_mode="HTML")
+    finally:
+        await _safe_delete(message)
 
 
 @router.message(Command("set_threshold"))
@@ -105,49 +197,39 @@ async def cmd_set_threshold(message: Message) -> None:
             "💡 Установите порог — бот уведомит, когда курс ≤ порога.\n\n"
             "Пример:\n/set_threshold 76.5"
         )
+        await _safe_delete(message)
         return
 
     try:
         threshold = float(args[1].replace(",", "."))
     except ValueError:
         await message.answer("Введите корректное число.\nПример: /set_threshold 76.5")
+        await _safe_delete(message)
         return
 
-    existing = await db.get_user(user_id)
-    if not existing:
-        await db.add_user(user_id)
-
+    await _ensure_user(user_id)
     await db.set_threshold(user_id, threshold)
     await message.answer(
         f"✅ Порог: <b>{threshold}</b> RUB/USD\n"
         f"Уведомлю, когда курс ≤ {threshold}",
         parse_mode="HTML",
     )
+    await _safe_delete(message)
 
 
 @router.message(Command("off_threshold"))
 async def cmd_off_threshold(message: Message) -> None:
     user_id = message.from_user.id
-    existing = await db.get_user(user_id)
-    if not existing:
-        await db.add_user(user_id)
-        await message.answer("Порог не был установлен.")
-        return
-
+    await _ensure_user(user_id)
     await db.clear_threshold(user_id)
     await message.answer("❌ Порог уведомления <b>сброшен</b>.", parse_mode="HTML")
+    await _safe_delete(message)
 
 
 @router.message(Command("notify"))
 async def cmd_notify(message: Message) -> None:
     user_id = message.from_user.id
-    user = await db.get_user(user_id)
-    if not user:
-        await db.add_user(user_id)
-        user = await db.get_user(user_id)
-        if not user:
-            await message.answer("Ошибка. Попробуйте /start.")
-            return
+    user = await _ensure_user(user_id)
 
     new_active = not user["is_active"]
     await db.toggle_user_active(user_id, new_active)
@@ -156,71 +238,170 @@ async def cmd_notify(message: Message) -> None:
         await message.answer("🔔 Уведомления <b>включены</b>.", parse_mode="HTML")
     else:
         await message.answer("🔕 Уведомления <b>выключены</b>.", parse_mode="HTML")
+    await _safe_delete(message)
 
 
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
     user_id = message.from_user.id
+    await _ensure_user(user_id)
     user = await db.get_user(user_id)
 
-    if not user:
-        await message.answer("Вы не зарегистрированы. Нажмите /start")
-        return
-
     last_rate = await db.get_last_rate()
-    last_info = "Нет данных"
-    if last_rate:
-        last_info = f"{last_rate['bank']}: <code>{last_rate['rate']}</code>"
-
-    status = "✅ Активны" if user["is_active"] else "❌ Выключены"
-    threshold = f"<b>{user['threshold']}</b>" if user["threshold"] else "не установлен"
-
+    text = format_settings_text(user, last_rate, config.CHECK_INTERVAL_MINUTES)
     await message.answer(
-        f"⚙️ <b>Ваши настройки</b>\n\n"
-        f"Уведомления: {status}\n"
-        f"Порог: {threshold}\n"
-        f"Последний курс: {last_info}\n"
-        f"Проверка: каждые {config.CHECK_INTERVAL_MINUTES} мин.",
+        text,
         parse_mode="HTML",
+        reply_markup=settings_keyboard(bool(user["is_active"]), bool(user["threshold"])),
     )
+    await _safe_delete(message)
 
 
 @router.message(F.text.lower().in_({"привет", "hello", "hi"}))
 async def cmd_hello(message: Message) -> None:
+    await _ensure_user(message.from_user.id)
     await message.answer(
-        "Привет! Я бот курсов USD/RUB в Гомеле.\n"
-        "Нажми /rate чтобы узнать текущий курс."
+        _WELCOME_TEXT,
+        parse_mode="HTML",
+        reply_markup=main_reply_keyboard(),
     )
+    await _safe_delete(message)
 
 
-@router.callback_query(ActionCallback.filter())
-async def process_action_callback(callback: CallbackQuery, callback_data: ActionCallback) -> None:
+# ─── Inline: Main menu callbacks ─────────────────────────────────
+
+@router.callback_query(MenuCallback.filter())
+async def process_menu_callback(callback: CallbackQuery, callback_data: MenuCallback) -> None:
     action = callback_data.action
+    user_id = callback.from_user.id
+    await _ensure_user(user_id)
 
-    if action == "top":
-        rates = await parse_bank_rates(config.PARSER_URL)
+    if action == "rate":
+        try:
+            rates = await parse_bank_rates(config.PARSER_URL)
+        except Exception:
+            logger.exception("Ошибка при получении курсов в callback")
+            await callback.answer("❌ Не удалось загрузить данные", show_alert=True)
+            return
         if not rates:
-            await callback.message.edit_text("Не удалось получить курсы.")
-            await callback.answer()
+            await callback.answer("Не удалось получить курсы", show_alert=True)
+            return
+        _, total_pages = paginate([r for r in rates if r.sell is not None], 1)
+        text = format_all_rates(rates, page=1)
+        kb = rate_keyboard()
+        if total_pages > 1:
+            kb.inline_keyboard.extend(
+                pagination_keyboard("rate", 1, total_pages).inline_keyboard
+            )
+        await _safe_edit_text(callback.message, text, kb)
+        await callback.answer()
+
+    elif action == "top":
+        try:
+            rates = await parse_bank_rates(config.PARSER_URL)
+        except Exception:
+            logger.exception("Ошибка при получении курсов в callback")
+            await callback.answer("❌ Не удалось загрузить данные", show_alert=True)
+            return
+        if not rates:
+            await callback.answer("Не удалось получить курсы", show_alert=True)
             return
         text = format_top_rates(rates)
-        try:
-            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=rate_actions_keyboard())
-        except TelegramBadRequest:
-            pass
+        await _safe_edit_text(callback.message, text, top_keyboard())
         await callback.answer()
 
     elif action == "history":
-        history = await db.get_rate_history(limit=10)
+        history = await db.get_rate_history(limit=80)
         if not history:
-            await callback.answer("Пока нет данных по истории", show_alert=True)
+            await callback.answer("Пока нет данных", show_alert=True)
             return
-        text = format_history(history)
-        try:
-            await callback.message.edit_text(text, parse_mode="HTML")
-        except TelegramBadRequest:
-            pass
+        _, total_pages = paginate(history, 1)
+        text = format_history(history, page=1)
+        kb = history_keyboard()
+        if total_pages > 1:
+            kb.inline_keyboard.extend(
+                pagination_keyboard("history", 1, total_pages).inline_keyboard
+            )
+        await _safe_edit_text(callback.message, text, kb)
         await callback.answer()
 
-    else:
+    elif action == "settings":
+        user = await db.get_user(user_id)
+        if not user:
+            await callback.answer("Нажмите /start", show_alert=True)
+            return
+
+        last_rate = await db.get_last_rate()
+        text = format_settings_text(user, last_rate, config.CHECK_INTERVAL_MINUTES)
+        kb = settings_keyboard(bool(user["is_active"]), bool(user["threshold"]))
+    await _safe_edit_text(callback.message, text, kb)
+    await callback.answer()
+
+
+# ─── Inline: Pagination callbacks ─────────────────────────────────
+
+@router.callback_query(PageCallback.filter())
+async def process_page_callback(callback: CallbackQuery, callback_data: PageCallback) -> None:
+    action = callback_data.action
+    page = callback_data.page
+
+    if action == "rate":
+        try:
+            rates = await parse_bank_rates(config.PARSER_URL)
+        except Exception:
+            logger.exception("Ошибка при получении курсов в callback")
+            await callback.answer("❌ Не удалось загрузить данные", show_alert=True)
+            return
+        if not rates:
+            await callback.answer("Не удалось получить курсы", show_alert=True)
+            return
+        valid = [r for r in rates if r.sell is not None]
+        _, total_pages = paginate(valid, page)
+        text = format_all_rates(rates, page=page)
+        kb = rate_keyboard()
+        if total_pages > 1:
+            kb.inline_keyboard.extend(
+                pagination_keyboard("rate", page, total_pages).inline_keyboard
+            )
+        await _safe_edit_text(callback.message, text, kb)
         await callback.answer()
+
+    elif action == "history":
+        history = await db.get_rate_history(limit=80)
+        if not history:
+            await callback.answer("Пока нет данных", show_alert=True)
+            return
+        _, total_pages = paginate(history, page)
+        text = format_history(history, page=page)
+        kb = history_keyboard()
+        if total_pages > 1:
+            kb.inline_keyboard.extend(
+                pagination_keyboard("history", page, total_pages).inline_keyboard
+            )
+        await _safe_edit_text(callback.message, text, kb)
+        await callback.answer()
+
+
+# ─── Inline: Settings callbacks ──────────────────────────────────
+
+@router.callback_query(SettingsCallback.filter())
+async def process_settings_callback(callback: CallbackQuery, callback_data: SettingsCallback) -> None:
+    user_id = callback.from_user.id
+    action = callback_data.action
+
+    if action == "toggle_notify":
+        user = await _ensure_user(user_id)
+        new_active = not user["is_active"]
+        await db.toggle_user_active(user_id, new_active)
+
+    elif action == "clear_threshold":
+        await _ensure_user(user_id)
+        await db.clear_threshold(user_id)
+
+    user = await db.get_user(user_id)
+
+    last_rate = await db.get_last_rate()
+    text = format_settings_text(user, last_rate, config.CHECK_INTERVAL_MINUTES)
+    kb = settings_keyboard(bool(user["is_active"]), bool(user["threshold"]))
+    await _safe_edit_text(callback.message, text, kb)
+    await callback.answer()

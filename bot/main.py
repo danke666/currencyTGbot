@@ -4,7 +4,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, BotCommandScopeDefault
 
 import config
 import database.db as db
@@ -16,13 +16,12 @@ from utils.logger import setup_logging
 logger = logging.getLogger(__name__)
 
 _COMMANDS = [
+    BotCommand(command="start", description="🏠 Меню бота"),
+    BotCommand(command="menu", description="🏠 Меню бота"),
     BotCommand(command="rate", description="💼 Все курсы банков"),
-    BotCommand(command="top", description="🏆 Топ-3 лучших"),
-    BotCommand(command="history", description="📜 История изменений"),
     BotCommand(command="set_threshold", description="⚡ Порог уведомления"),
     BotCommand(command="off_threshold", description="❌ Сбросить порог"),
     BotCommand(command="notify", description="🔔 Вкл/выкл уведомления"),
-    BotCommand(command="status", description="⚙️ Ваши настройки"),
 ]
 
 
@@ -45,7 +44,7 @@ async def main() -> None:
     dp = Dispatcher()
     dp.include_router(router)
 
-    await bot.set_my_commands(_COMMANDS)
+    await bot.delete_my_commands(scope=BotCommandScopeDefault())
 
     notifier_task = asyncio.create_task(run_notifier(bot))
 

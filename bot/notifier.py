@@ -10,16 +10,24 @@ from services.rate_service import BestRate, format_rate_info, parse_bank_rates
 logger = logging.getLogger(__name__)
 
 _stop_event = asyncio.Event()
+_send_sem = asyncio.Semaphore(5)
+
+
+async def _send_one(bot: Bot, user_id: int, text: str) -> None:
+    if _stop_event.is_set():
+        return
+    try:
+        async with _send_sem:
+            await bot.send_message(user_id, text, parse_mode="HTML")
+    except Exception:
+        logger.exception("Не удалось отправить уведомление user_id=%s", user_id)
 
 
 async def _send_to_all(bot: Bot, user_ids: list[int], text: str) -> None:
-    for uid in user_ids:
-        if _stop_event.is_set():
-            return
-        try:
-            await bot.send_message(uid, text, parse_mode="HTML")
-        except Exception:
-            logger.exception("Не удалось отправить уведомление user_id=%s", uid)
+    if not user_ids or _stop_event.is_set():
+        return
+    tasks = [_send_one(bot, uid, text) for uid in user_ids]
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def stop_notifier() -> None:
@@ -32,7 +40,9 @@ async def run_notifier(bot: Bot) -> None:
 
     while not _stop_event.is_set():
         try:
-            await asyncio.wait_for(asyncio.sleep(interval), timeout=interval + 5)
+            await asyncio.wait_for(_stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
         except asyncio.CancelledError:
             break
 
@@ -51,7 +61,13 @@ async def run_notifier(bot: Bot) -> None:
                 continue
 
             best = min(valid, key=lambda r: r.sell)
-            result = BestRate(bank=best.bank, rate=best.sell)
+            result = BestRate(
+                bank=best.bank,
+                rate=best.sell,
+                address=best.address,
+                branch_count=best.branch_count,
+                is_mobile=best.is_mobile,
+            )
 
             last = await db.get_last_rate()
             await db.save_rate(result.bank, result.rate)
@@ -79,21 +95,17 @@ async def run_notifier(bot: Bot) -> None:
                 diff = round(result.rate - last["rate"], 4)
                 base_text += f"\n\n📈 Рост на {diff} RUB"
 
+            threshold_tasks = []
             threshold_user_ids: set[int] = set()
             for user in users:
-                if _stop_event.is_set():
-                    return
                 threshold = user["threshold"]
                 if threshold and result.rate <= threshold:
                     threshold_user_ids.add(user["user_id"])
-                    try:
-                        await bot.send_message(
-                            user["user_id"],
-                            base_text + f"\n\n⚡ Курс ниже вашего порога: {threshold}",
-                            parse_mode="HTML",
-                        )
-                    except Exception:
-                        logger.exception("Не удалось отправить user_id=%s", user["user_id"])
+                    text = base_text + f"\n\n⚡ Курс ниже вашего порога: {threshold}"
+                    threshold_tasks.append(_send_one(bot, user["user_id"], text))
+
+            if threshold_tasks:
+                await asyncio.gather(*threshold_tasks, return_exceptions=True)
 
             other_ids = [u["user_id"] for u in users if u["user_id"] not in threshold_user_ids]
             if other_ids:

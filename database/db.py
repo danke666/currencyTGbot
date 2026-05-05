@@ -33,6 +33,8 @@ async def get_connection() -> aiosqlite.Connection:
             os.makedirs(db_dir, exist_ok=True)
         _DB = await aiosqlite.connect(config.DATABASE_PATH)
         _DB.row_factory = aiosqlite.Row
+        await _DB.execute("PRAGMA journal_mode=WAL")
+        await _DB.execute("PRAGMA synchronous=NORMAL")
     return _DB
 
 
@@ -54,6 +56,11 @@ async def init_db() -> None:
     try:
         await db.execute("ALTER TABLE rate_history ADD COLUMN city TEXT NOT NULL DEFAULT 'gomel'")
     except aiosqlite.OperationalError:
+        pass
+    # Truncate WAL to keep disk usage low on shared hosting
+    try:
+        await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
         pass
     await db.commit()
 
