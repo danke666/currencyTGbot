@@ -117,7 +117,9 @@ def format_all_rates(rates: list[BankRate], page: int = 1) -> str:
         sell_str = f"<code>{r.sell}</code>"
 
         if global_pos <= 3:
-            medal = "📱" if r.is_mobile else _MEDALS[global_pos - 1]
+            medal = _MEDALS[global_pos - 1]
+            if r.is_mobile:
+                medal += "📱"
             lines.append(f"{medal} <b>{_esc(r.bank)}</b> — {sell_str} ₽")
             addr = _format_address_line(r)
             if addr:
@@ -147,7 +149,9 @@ def format_top_rates(rates: list[BankRate], n: int = 3) -> str:
     lines = [f"🏆 <b>Топ-{n} лучших курса · Гомель</b>\n"]
 
     for i, r in enumerate(top):
-        medal = "📱" if r.is_mobile else (_MEDALS[i] if i < 3 else f"{i + 1}.")
+        medal = _MEDALS[i] if i < 3 else f"{i + 1}."
+        if r.is_mobile:
+            medal += "📱"
         lines.append(f"{medal} <b>{_esc(r.bank)}</b> — <code>{r.sell}</code> ₽")
         addr = _format_address_line(r)
         if addr:
