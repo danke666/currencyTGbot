@@ -125,7 +125,9 @@ async def btn_rates(message: Message) -> None:
             kb.inline_keyboard.extend(
                 pagination_keyboard("rate", 1, total_pages).inline_keyboard
             )
-        if await send_rates_rich_message(message.bot, message.chat.id, rates, city, kb):
+        # A Rich Message cannot be edited by aiogram's regular edit_text.
+        # Keep paginated results as normal HTML, because page callbacks edit it.
+        if total_pages == 1 and await send_rates_rich_message(message.bot, message.chat.id, rates, city):
             return
         await message.answer(format_all_rates(rates, page=1, city=city), parse_mode="HTML", reply_markup=kb)
     except Exception:
@@ -201,7 +203,7 @@ async def cmd_rate(message: Message) -> None:
             kb.inline_keyboard.extend(
                 pagination_keyboard("rate", 1, total_pages).inline_keyboard
             )
-        if await send_rates_rich_message(message.bot, message.chat.id, rates, city, kb):
+        if total_pages == 1 and await send_rates_rich_message(message.bot, message.chat.id, rates, city):
             return
         await message.answer(format_all_rates(rates, page=1, city=city), parse_mode="HTML", reply_markup=kb)
     except Exception:
