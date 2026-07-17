@@ -19,7 +19,7 @@ from services.rate_service import (
 )
 from services.rate_service import _esc
 from services.parser import parse_bank_rates
-from bot.callbacks import CityCallback, MenuCallback, PageCallback, SettingsCallback
+from bot.callbacks import CityCallback, DashboardCallback, MenuCallback, PageCallback, SettingsCallback
 from bot.keyboards import (
     main_reply_keyboard,
     pagination_keyboard,
@@ -28,6 +28,7 @@ from bot.keyboards import (
     history_keyboard,
     settings_keyboard,
     city_keyboard,
+    dashboard_keyboard,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,21 +83,105 @@ async def _user_city(user_id: int) -> str:
     return (await _ensure_user(user_id))["city"]
 
 
+async def _dashboard_content(user_id: int) -> tuple[str, object]:
+    user = await _ensure_user(user_id)
+    city = user["city"]
+    result = await get_best_rate(config.CITY_URLS[city])
+    city_name = config.CITY_NAMES[city]
+    if result:
+        body = (
+            f"🏠 <b>Панель управления</b>\n\n"
+            f"Город: <b>{city_name}</b>\n"
+            f"Лучший курс покупки: <b>{result.rate} RUB/USD</b>\n"
+            f"Банк: {_esc(result.bank)}\n\n"
+            f"{format_rate_info(result, city)}"
+        )
+    else:
+        body = f"🏠 <b>Панель управления</b>\n\nГород: <b>{city_name}</b>\n⚠️ Курс временно недоступен"
+    return body, dashboard_keyboard(bool(user["is_active"]), bool(user["threshold"]))
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     await _ensure_user(message.from_user.id)
-    await message.answer(
-        _WELCOME_TEXT,
-        parse_mode="HTML",
-        reply_markup=main_reply_keyboard(),
-    )
+    text, keyboard = await _dashboard_content(message.from_user.id)
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await _safe_delete(message)
 
 
 @router.message(Command("menu"))
 async def cmd_menu(message: Message) -> None:
-    await message.answer(_WELCOME_TEXT, parse_mode="HTML", reply_markup=main_reply_keyboard())
+    text, keyboard = await _dashboard_content(message.from_user.id)
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await _safe_delete(message)
+
+
+@router.message(F.text == "🏠 Панель")
+async def btn_dashboard(message: Message) -> None:
+    text, keyboard = await _dashboard_content(message.from_user.id)
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    await _safe_delete(message)
+
+
+@router.message(F.text == "🧮 Калькулятор")
+async def btn_calculator(message: Message) -> None:
+    await message.answer("🧮 Введите сумму долларов командой:\n\n<code>/calc 1000</code>", parse_mode="HTML")
+    await _safe_delete(message)
+
+
+@router.callback_query(DashboardCallback.filter())
+async def process_dashboard_callback(callback: CallbackQuery, callback_data: DashboardCallback) -> None:
+    action = callback_data.action
+    user_id = callback.from_user.id
+    user = await _ensure_user(user_id)
+    city = user["city"]
+
+    if action == "home":
+        text, keyboard = await _dashboard_content(user_id)
+        await _safe_edit_text(callback.message, text, keyboard)
+    elif action == "city":
+        await _safe_edit_text(callback.message, "🌆 Выберите город:", city_keyboard(city))
+    elif action == "settings":
+        last = await db.get_last_rate(city)
+        await _safe_edit_text(
+            callback.message,
+            format_settings_text(user, last, config.CHECK_INTERVAL_MINUTES),
+            settings_keyboard(bool(user["is_active"]), bool(user["threshold"])),
+        )
+    elif action == "toggle_notify":
+        await db.toggle_user_active(user_id, not user["is_active"])
+        text, keyboard = await _dashboard_content(user_id)
+        await _safe_edit_text(callback.message, text, keyboard)
+    elif action in {"rates", "top"}:
+        rates = await parse_bank_rates(config.CITY_URLS[city])
+        if not rates:
+            await callback.answer("Курс временно недоступен", show_alert=True)
+        elif action == "rates":
+            await _safe_edit_text(callback.message, format_all_rates(rates, city=city), rate_keyboard())
+        else:
+            await _safe_edit_text(callback.message, format_top_rates(rates, city=city), top_keyboard())
+    elif action == "sell":
+        result = await get_best_rate(config.CITY_URLS[city], "sell_usd")
+        text = "Курс недоступен" if not result else f"💵 Лучший курс продажи USD банку\n\n<b>{result.rate} RUB/USD</b>\n{_esc(result.bank)}"
+        await _safe_edit_text(callback.message, text, dashboard_keyboard(bool(user["is_active"]), bool(user["threshold"])))
+    elif action == "calc":
+        await callback.message.answer("🧮 Введите сумму: <code>/calc 1000</code>", parse_mode="HTML")
+    elif action == "compare":
+        results = await asyncio.gather(*(get_best_rate(url) for url in config.CITY_URLS.values()), return_exceptions=True)
+        lines = ["⚖️ <b>Лучшие курсы покупки USD</b>\n"]
+        for name, result in zip(config.CITY_URLS, results):
+            lines.append(f"{config.CITY_NAMES[name]}: " + (f"<b>{result.rate}</b> RUB/USD" if not isinstance(result, Exception) and result else "нет данных"))
+        await _safe_edit_text(callback.message, "\n".join(lines), dashboard_keyboard(bool(user["is_active"]), bool(user["threshold"])))
+    elif action == "stats":
+        history = await db.get_rate_history(limit=500, city=city)
+        values = [float(row["rate"]) for row in history]
+        text = "📈 Недостаточно данных" if not values else f"📈 <b>Статистика · {config.CITY_NAMES[city]}</b>\n\nПроверок: {len(values)}\nМинимум: {min(values)}\nМаксимум: {max(values)}\nСреднее: {round(sum(values)/len(values), 4)}"
+        await _safe_edit_text(callback.message, text, dashboard_keyboard(bool(user["is_active"]), bool(user["threshold"])))
+    elif action == "health":
+        result = await get_best_rate(config.CITY_URLS[city])
+        text = f"🩺 Парсер: {'✅ работает' if result else '❌ недоступен'}\nБаза: ✅ доступна"
+        await _safe_edit_text(callback.message, text, dashboard_keyboard(bool(user["is_active"]), bool(user["threshold"])))
+    await callback.answer()
 
 
 @router.message(F.text == "📊 Курсы")
