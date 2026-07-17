@@ -104,6 +104,10 @@ async def _dashboard_content(user_id: int) -> tuple[str, object]:
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     await _ensure_user(message.from_user.id)
+    await message.answer(
+        "⌨️ Нижняя клавиатура включена: выберите раздел или используйте панель ниже.",
+        reply_markup=main_reply_keyboard(),
+    )
     text, keyboard = await _dashboard_content(message.from_user.id)
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await _safe_delete(message)
@@ -111,6 +115,7 @@ async def cmd_start(message: Message) -> None:
 
 @router.message(Command("menu"))
 async def cmd_menu(message: Message) -> None:
+    await message.answer("⌨️ Клавиатура управления обновлена.", reply_markup=main_reply_keyboard())
     text, keyboard = await _dashboard_content(message.from_user.id)
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await _safe_delete(message)
@@ -458,6 +463,30 @@ async def cmd_stats(message: Message) -> None:
         f"Изменение за период: <b>{change:+g}</b> ({direction})",
         parse_mode="HTML",
     )
+
+
+@router.message(F.text == "💵 Продать USD")
+async def btn_sell_usd(message: Message) -> None:
+    await cmd_sell_usd(message)
+    await _safe_delete(message)
+
+
+@router.message(F.text == "⚖️ Сравнить города")
+async def btn_compare(message: Message) -> None:
+    await cmd_compare(message)
+    await _safe_delete(message)
+
+
+@router.message(F.text == "📈 Статистика")
+async def btn_stats(message: Message) -> None:
+    await cmd_stats(message)
+    await _safe_delete(message)
+
+
+@router.message(F.text == "🩺 Состояние")
+async def btn_health(message: Message) -> None:
+    await cmd_health(message)
+    await _safe_delete(message)
 
 
 @router.message(Command("pair"))

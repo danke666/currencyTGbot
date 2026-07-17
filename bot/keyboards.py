@@ -13,8 +13,10 @@ def main_reply_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="🏠 Панель"), KeyboardButton(text="📊 Курсы")],
             [KeyboardButton(text="🏆 Топ-3"), KeyboardButton(text="🧮 Калькулятор")],
-            [KeyboardButton(text="📜 История"), KeyboardButton(text="🌆 Город")],
-            [KeyboardButton(text="⚙️ Настройки")],
+            [KeyboardButton(text="💵 Продать USD"), KeyboardButton(text="⚖️ Сравнить города")],
+            [KeyboardButton(text="📈 Статистика"), KeyboardButton(text="📜 История")],
+            [KeyboardButton(text="🌆 Город"), KeyboardButton(text="⚙️ Настройки")],
+            [KeyboardButton(text="🩺 Состояние")],
         ],
         resize_keyboard=True,
     )
@@ -23,10 +25,13 @@ def main_reply_keyboard() -> ReplyKeyboardMarkup:
 def city_keyboard(current_city: str) -> InlineKeyboardMarkup:
     labels = {"gomel": "Гомель", "minsk": "Минск"}
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text=("✅ " if city == current_city else "") + name,
-            callback_data=CityCallback(city=city).pack(),
-        ) for city, name in labels.items()]
+        [
+            InlineKeyboardButton(
+                text=("✅ " if city == current_city else "") + name,
+                callback_data=CityCallback(city=city).pack(),
+            )
+            for city, name in labels.items()
+        ],
         [InlineKeyboardButton(text="🏠 Панель", callback_data=DashboardCallback(action="home").pack())],
     ])
 
