@@ -12,11 +12,8 @@ def main_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🏠 Панель"), KeyboardButton(text="📊 Курсы")],
-            [KeyboardButton(text="🏆 Топ-3"), KeyboardButton(text="🧮 Калькулятор")],
-            [KeyboardButton(text="💵 Продать USD"), KeyboardButton(text="⚖️ Сравнить города")],
-            [KeyboardButton(text="📈 Статистика"), KeyboardButton(text="📜 История")],
+            [KeyboardButton(text="🧮 Калькулятор"), KeyboardButton(text="📜 История")],
             [KeyboardButton(text="🌆 Город"), KeyboardButton(text="⚙️ Настройки")],
-            [KeyboardButton(text="🩺 Состояние")],
         ],
         resize_keyboard=True,
     )
@@ -39,16 +36,24 @@ def city_keyboard(current_city: str) -> InlineKeyboardMarkup:
 def dashboard_keyboard(is_active: bool, has_threshold: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Курсы", callback_data=DashboardCallback(action="rates").pack()),
+         InlineKeyboardButton(text="📜 История", callback_data=MenuCallback(action="history").pack())],
+        [InlineKeyboardButton(text="🧮 Рассчитать покупку", callback_data=DashboardCallback(action="calc").pack()),
          InlineKeyboardButton(text="🏆 Топ-3", callback_data=DashboardCallback(action="top").pack())],
-        [InlineKeyboardButton(text="💵 Продать USD", callback_data=DashboardCallback(action="sell").pack()),
-         InlineKeyboardButton(text="🧮 Калькулятор", callback_data=DashboardCallback(action="calc").pack())],
-        [InlineKeyboardButton(text="⚖️ Сравнить города", callback_data=DashboardCallback(action="compare").pack()),
-         InlineKeyboardButton(text="📈 Статистика", callback_data=DashboardCallback(action="stats").pack())],
         [InlineKeyboardButton(text="🌆 Город", callback_data=DashboardCallback(action="city").pack()),
          InlineKeyboardButton(text="⚙️ Настройки", callback_data=DashboardCallback(action="settings").pack())],
         [InlineKeyboardButton(text=("🔕 Выключить уведомления" if is_active else "🔔 Включить уведомления"),
                               callback_data=DashboardCallback(action="toggle_notify").pack())],
-        [InlineKeyboardButton(text="🩺 Состояние", callback_data=DashboardCallback(action="health").pack())],
+    ])
+
+
+def calculator_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="$100", callback_data=DashboardCallback(action="calc_100").pack()),
+            InlineKeyboardButton(text="$500", callback_data=DashboardCallback(action="calc_500").pack()),
+            InlineKeyboardButton(text="$1000", callback_data=DashboardCallback(action="calc_1000").pack()),
+        ],
+        [InlineKeyboardButton(text="🏠 Панель", callback_data=DashboardCallback(action="home").pack())],
     ])
 
 

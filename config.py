@@ -17,12 +17,6 @@ CITY_NAMES: dict[str, str] = {
     "gomel": "Гомель",
     "minsk": "Минск",
 }
-PAIR_URLS: dict[str, str] = {
-    "usd": "https://myfin.by/currency/usd",
-    "eur": "https://myfin.by/currency/eur",
-    "rub": "https://myfin.by/currency/rub",
-    "usdrub": PARSER_URL,
-}
 DEFAULT_CITY: str = os.getenv("DEFAULT_CITY", "gomel").lower()
 if DEFAULT_CITY not in CITY_URLS:
     DEFAULT_CITY = "gomel"
