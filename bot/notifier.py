@@ -49,67 +49,67 @@ async def run_notifier(bot: Bot) -> None:
         if _stop_event.is_set():
             break
 
-        try:
-            rates = await parse_bank_rates(config.PARSER_URL)
-            if not rates:
-                logger.warning("Не удалось получить курс для уведомлений")
-                continue
+        for city, url in config.CITY_URLS.items():
+            try:
+                await _check_city(bot, city, url)
+            except Exception:
+                logger.exception("Ошибка проверки курсов для города %s", city)
 
-            valid = [r for r in rates if r.sell is not None]
-            if not valid:
-                logger.warning("Нет валидных курсов")
-                continue
 
-            best = min(valid, key=lambda r: r.sell)
-            result = BestRate(
-                bank=best.bank,
-                rate=best.sell,
-                address=best.address,
-                branch_count=best.branch_count,
-                is_mobile=best.is_mobile,
-            )
+async def _check_city(bot: Bot, city: str, url: str) -> None:
+    rates = await parse_bank_rates(url)
+    if not rates:
+        logger.warning("Не удалось получить курс для %s", city)
+        return
 
-            last = await db.get_last_rate()
-            await db.save_rate(result.bank, result.rate)
-            await db.cleanup_rate_history()
+    valid = [r for r in rates if r.sell is not None]
+    if not valid:
+        logger.warning("Нет валидных курсов для %s", city)
+        return
 
-            users = await db.get_active_users()
-            if not users:
-                continue
+    best = min(valid, key=lambda r: r.sell)
+    result = BestRate(
+        bank=best.bank, rate=best.sell, address=best.address,
+        branch_count=best.branch_count, is_mobile=best.is_mobile,
+    )
 
-            rate_changed = (
-                last is None
-                or last["bank"] != result.bank
-                or last["rate"] != result.rate
-            )
+    last = await db.get_last_rate(city)
+    await db.save_rate(result.bank, result.rate, city)
+    await db.cleanup_rate_history()
 
-            if not rate_changed:
-                continue
+    users = [u for u in await db.get_active_users() if u["city"] == city]
+    if not users:
+        return
 
-            base_text = f"🔄 <b>Курс USD/RUB изменился</b>\n\n{format_rate_info(result)}"
+    rate_changed = last is None or last["bank"] != result.bank or last["rate"] != result.rate
+    if not rate_changed:
+        return
 
-            if last is not None and result.rate < last["rate"]:
-                diff = round(last["rate"] - result.rate, 4)
-                base_text += f"\n\n📉 Снижение на {diff} RUB — выгоднее покупать!"
-            elif last is not None and result.rate > last["rate"]:
-                diff = round(result.rate - last["rate"], 4)
-                base_text += f"\n\n📈 Рост на {diff} RUB"
+    city_name = config.CITY_NAMES[city]
+    base_text = (
+        f"🔄 <b>Курс USD/RUB изменился · {city_name}</b>\n\n"
+        f"{format_rate_info(result, city)}"
+    )
 
-            threshold_tasks = []
-            threshold_user_ids: set[int] = set()
-            for user in users:
-                threshold = user["threshold"]
-                if threshold and result.rate <= threshold:
-                    threshold_user_ids.add(user["user_id"])
-                    text = base_text + f"\n\n⚡ Курс ниже вашего порога: {threshold}"
-                    threshold_tasks.append(_send_one(bot, user["user_id"], text))
+    if last is not None and result.rate < last["rate"]:
+        diff = round(last["rate"] - result.rate, 4)
+        base_text += f"\n\n📉 Снижение на {diff} RUB — выгоднее покупать!"
+    elif last is not None and result.rate > last["rate"]:
+        diff = round(result.rate - last["rate"], 4)
+        base_text += f"\n\n📈 Рост на {diff} RUB"
 
-            if threshold_tasks:
-                await asyncio.gather(*threshold_tasks, return_exceptions=True)
+    threshold_tasks = []
+    threshold_user_ids: set[int] = set()
+    for user in users:
+        threshold = user["threshold"]
+        if threshold and result.rate <= threshold:
+            threshold_user_ids.add(user["user_id"])
+            text = base_text + f"\n\n⚡ Курс ниже вашего порога: {threshold}"
+            threshold_tasks.append(_send_one(bot, user["user_id"], text))
 
-            other_ids = [u["user_id"] for u in users if u["user_id"] not in threshold_user_ids]
-            if other_ids:
-                await _send_to_all(bot, other_ids, base_text)
+    if threshold_tasks:
+        await asyncio.gather(*threshold_tasks, return_exceptions=True)
 
-        except Exception:
-            logger.exception("Ошибка в цикле уведомлений")
+    other_ids = [u["user_id"] for u in users if u["user_id"] not in threshold_user_ids]
+    if other_ids:
+        await _send_to_all(bot, other_ids, base_text)

@@ -5,17 +5,28 @@ from aiogram.types import (
     KeyboardButton,
 )
 
-from bot.callbacks import MenuCallback, PageCallback, SettingsCallback
+from bot.callbacks import CityCallback, MenuCallback, PageCallback, SettingsCallback
 
 
 def main_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📊 Курсы"), KeyboardButton(text="🏆 Топ-3")],
-            [KeyboardButton(text="📜 История"), KeyboardButton(text="⚙️ Настройки")],
+            [KeyboardButton(text="📜 История"), KeyboardButton(text="🌆 Город")],
+            [KeyboardButton(text="⚙️ Настройки")],
         ],
         resize_keyboard=True,
     )
+
+
+def city_keyboard(current_city: str) -> InlineKeyboardMarkup:
+    labels = {"gomel": "Гомель", "minsk": "Минск"}
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=("✅ " if city == current_city else "") + name,
+            callback_data=CityCallback(city=city).pack(),
+        ) for city, name in labels.items()]
+    ])
 
 
 def rate_keyboard() -> InlineKeyboardMarkup:

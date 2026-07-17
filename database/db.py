@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     threshold REAL NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1,
+    city TEXT NOT NULL DEFAULT 'gomel',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS rate_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     bank TEXT NOT NULL,
     rate REAL NOT NULL,
+    city TEXT NOT NULL DEFAULT 'gomel',
     checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
@@ -57,6 +59,9 @@ async def init_db() -> None:
         await db.execute("ALTER TABLE rate_history ADD COLUMN city TEXT NOT NULL DEFAULT 'gomel'")
     except aiosqlite.OperationalError:
         pass
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rate_history_city_id ON rate_history(city, id DESC)"
+    )
     # Truncate WAL to keep disk usage low on shared hosting
     try:
         await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -68,8 +73,8 @@ async def init_db() -> None:
 async def add_user(user_id: int) -> None:
     db = await get_connection()
     await db.execute(
-        "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
-        (user_id,),
+        "INSERT OR IGNORE INTO users (user_id, city) VALUES (?, ?)",
+        (user_id, config.DEFAULT_CITY),
     )
     await db.commit()
 
@@ -95,7 +100,7 @@ async def clear_threshold(user_id: int) -> None:
 async def get_user(user_id: int) -> dict | None:
     db = await get_connection()
     cursor = await db.execute(
-        "SELECT user_id, threshold, is_active, created_at FROM users WHERE user_id = ?",
+        "SELECT user_id, threshold, is_active, city, created_at FROM users WHERE user_id = ?",
         (user_id,),
     )
     row = await cursor.fetchone()
@@ -105,7 +110,7 @@ async def get_user(user_id: int) -> dict | None:
 async def get_active_users() -> list[dict]:
     db = await get_connection()
     cursor = await db.execute(
-        "SELECT user_id, threshold, is_active, created_at FROM users WHERE is_active = 1"
+        "SELECT user_id, threshold, is_active, city, created_at FROM users WHERE is_active = 1"
     )
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]
@@ -120,29 +125,40 @@ async def toggle_user_active(user_id: int, active: bool) -> None:
     await db.commit()
 
 
-async def save_rate(bank: str, rate: float) -> None:
+async def set_user_city(user_id: int, city: str) -> None:
+    if city not in config.CITY_URLS:
+        raise ValueError(f"Unsupported city: {city}")
+    db = await get_connection()
+    await db.execute("UPDATE users SET city = ? WHERE user_id = ?", (city, user_id))
+    await db.commit()
+
+
+async def save_rate(bank: str, rate: float, city: str = "gomel") -> None:
     db = await get_connection()
     await db.execute(
-        "INSERT INTO rate_history (bank, rate) VALUES (?, ?)",
-        (bank, rate),
+        "INSERT INTO rate_history (bank, rate, city) VALUES (?, ?, ?)",
+        (bank, rate, city),
     )
     await db.commit()
 
 
-async def get_last_rate() -> dict | None:
+async def get_last_rate(city: str = "gomel") -> dict | None:
     db = await get_connection()
     cursor = await db.execute(
-        "SELECT bank, rate, checked_at FROM rate_history ORDER BY id DESC LIMIT 1"
+        "SELECT bank, rate, city, checked_at FROM rate_history "
+        "WHERE city = ? ORDER BY id DESC LIMIT 1",
+        (city,),
     )
     row = await cursor.fetchone()
     return dict(row) if row else None
 
 
-async def get_rate_history(limit: int = 10) -> list[dict]:
+async def get_rate_history(limit: int = 10, city: str = "gomel") -> list[dict]:
     db = await get_connection()
     cursor = await db.execute(
-        "SELECT bank, rate, checked_at FROM rate_history ORDER BY id DESC LIMIT ?",
-        (limit,),
+        "SELECT bank, rate, city, checked_at FROM rate_history "
+        "WHERE city = ? ORDER BY id DESC LIMIT ?",
+        (city, limit),
     )
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]
@@ -151,8 +167,9 @@ async def get_rate_history(limit: int = 10) -> list[dict]:
 async def cleanup_rate_history(max_rows: int = 1000) -> None:
     db = await get_connection()
     await db.execute(
-        "DELETE FROM rate_history WHERE id NOT IN "
-        "(SELECT id FROM rate_history ORDER BY id DESC LIMIT ?)",
+        "DELETE FROM rate_history WHERE id NOT IN ("
+        "SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY city ORDER BY id DESC) AS rn "
+        "FROM rate_history) WHERE rn <= ?)",
         (max_rows,),
     )
     await db.commit()

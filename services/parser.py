@@ -49,9 +49,8 @@ class BankRate:
     is_mobile: bool = False
 
 
-# Simple in-memory TTL cache
-_cache: list[BankRate] | None = None
-_cache_ts: float = 0.0
+# In-memory TTL cache is keyed by URL so different cities never share data.
+_cache: dict[str, tuple[float, list[BankRate]]] = {}
 CACHE_TTL: float = 90.0
 
 
@@ -341,15 +340,13 @@ async def fetch_page(url: str | None = None) -> str:
 
 
 async def parse_bank_rates(url: str | None = None) -> list[BankRate]:
-    global _cache, _cache_ts
-
     target_url = url or config.PARSER_URL
     now = time.monotonic()
+    cached = _cache.get(target_url)
 
-    # Return cached data for default URL if still fresh
-    if target_url == config.PARSER_URL and _cache is not None and (now - _cache_ts) < CACHE_TTL:
-        logger.debug("Returning cached rates (age=%.1fs)", now - _cache_ts)
-        return list(_cache)
+    if cached is not None and (now - cached[0]) < CACHE_TTL:
+        logger.debug("Returning cached rates for %s (age=%.1fs)", target_url, now - cached[0])
+        return list(cached[1])
 
     html = ""
     try:
@@ -359,9 +356,9 @@ async def parse_bank_rates(url: str | None = None) -> list[BankRate]:
     if not html:
         logger.error("Пустой ответ от сервера")
         # Fallback to stale cache (up to 5 min old) on fetch error
-        if target_url == config.PARSER_URL and _cache is not None and (now - _cache_ts) < 300:
-            logger.warning("Returning stale cache (age=%.1fs) due to fetch error", now - _cache_ts)
-            return list(_cache)
+        if cached is not None and (now - cached[0]) < 300:
+            logger.warning("Returning stale cache for %s due to fetch error", target_url)
+            return list(cached[1])
         return []
 
     loop = asyncio.get_running_loop()
@@ -374,13 +371,11 @@ async def parse_bank_rates(url: str | None = None) -> list[BankRate]:
     if not rates:
         logger.warning("Не удалось извлечь курсы из HTML")
         # Fallback to stale cache on parse error
-        if target_url == config.PARSER_URL and _cache is not None and (now - _cache_ts) < 300:
-            logger.warning("Returning stale cache (age=%.1fs) due to parse error", now - _cache_ts)
-            return list(_cache)
+        if cached is not None and (now - cached[0]) < 300:
+            logger.warning("Returning stale cache for %s due to parse error", target_url)
+            return list(cached[1])
 
-    # Update cache for default URL only if we got valid data
-    if target_url == config.PARSER_URL and rates:
-        _cache = list(rates)
-        _cache_ts = now
+    if rates:
+        _cache[target_url] = (now, list(rates))
 
     return rates

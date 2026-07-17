@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+import config
 from services.parser import BankRate, parse_bank_rates
 
 logger = logging.getLogger(__name__)
@@ -61,14 +62,14 @@ def _esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _format_address_line(rate: BankRate | BestRate) -> str | None:
+def _format_address_line(rate: BankRate | BestRate, city_name: str) -> str | None:
     """Return a location line for a rate, or None if no location info."""
     if getattr(rate, "is_mobile", False):
         return None
     if rate.address:
         return f"📍 {_esc(rate.address)}"
     if rate.branch_count > 1:
-        return f"📍 г. Гомель, {rate.branch_count} отделений"
+        return f"📍 г. {city_name}, {rate.branch_count} отделений"
     return None
 
 
@@ -81,6 +82,7 @@ def format_settings_text(user: dict, last_rate: dict | None, interval: int) -> s
         last_info = f"{last_rate['bank']}: <code>{last_rate['rate']}</code>"
     return (
         f"⚙️ <b>Настройки</b>\n\n"
+        f"Город: <b>{config.CITY_NAMES[user['city']]}</b>\n"
         f"Уведомления: {status}\n"
         f"Порог: {threshold}\n"
         f"Последний курс: {last_info}\n"
@@ -88,18 +90,18 @@ def format_settings_text(user: dict, last_rate: dict | None, interval: int) -> s
     )
 
 
-def format_rate_info(result: BestRate) -> str:
+def format_rate_info(result: BestRate, city: str = "gomel") -> str:
     lines = [
         f"🏦 <b>Лучший курс покупки USD</b>\n"
         f"{_esc(result.bank)} — <code>{result.rate}</code> RUB/USD"
     ]
-    addr = _format_address_line(result)
+    addr = _format_address_line(result, config.CITY_NAMES[city])
     if addr:
         lines.append(addr)
     return "\n".join(lines)
 
 
-def format_all_rates(rates: list[BankRate], page: int = 1) -> str:
+def format_all_rates(rates: list[BankRate], page: int = 1, city: str = "gomel") -> str:
     if not rates:
         return "Нет данных о курсах."
 
@@ -110,7 +112,8 @@ def format_all_rates(rates: list[BankRate], page: int = 1) -> str:
 
     page_items, total_pages = paginate(valid, page, _PER_PAGE)
 
-    lines = [f"💱 <b>USD/RUB · Гомель</b>  <i>(стр. {page}/{total_pages})</i>\n"]
+    city_name = config.CITY_NAMES[city]
+    lines = [f"💱 <b>USD/RUB · {city_name}</b>  <i>(стр. {page}/{total_pages})</i>\n"]
 
     global_pos = (page - 1) * _PER_PAGE + 1
     for r in page_items:
@@ -121,7 +124,7 @@ def format_all_rates(rates: list[BankRate], page: int = 1) -> str:
             if r.is_mobile:
                 medal += "📱"
             lines.append(f"{medal} <b>{_esc(r.bank)}</b> — {sell_str} ₽")
-            addr = _format_address_line(r)
+            addr = _format_address_line(r, city_name)
             if addr:
                 lines.append(f"   {addr}")
         else:
@@ -137,7 +140,7 @@ def format_all_rates(rates: list[BankRate], page: int = 1) -> str:
     return "\n".join(lines)
 
 
-def format_top_rates(rates: list[BankRate], n: int = 3) -> str:
+def format_top_rates(rates: list[BankRate], n: int = 3, city: str = "gomel") -> str:
     if not rates:
         return "Нет данных о курсах."
 
@@ -146,27 +149,28 @@ def format_top_rates(rates: list[BankRate], n: int = 3) -> str:
         return "Нет данных о курсах."
 
     top = valid[:n]
-    lines = [f"🏆 <b>Топ-{n} лучших курса · Гомель</b>\n"]
+    city_name = config.CITY_NAMES[city]
+    lines = [f"🏆 <b>Топ-{n} лучших курса · {city_name}</b>\n"]
 
     for i, r in enumerate(top):
         medal = _MEDALS[i] if i < 3 else f"{i + 1}."
         if r.is_mobile:
             medal += "📱"
         lines.append(f"{medal} <b>{_esc(r.bank)}</b> — <code>{r.sell}</code> ₽")
-        addr = _format_address_line(r)
+        addr = _format_address_line(r, city_name)
         if addr:
             lines.append(f"   {addr}")
 
     return "\n".join(lines)
 
 
-def format_history(history: list[dict], page: int = 1) -> str:
+def format_history(history: list[dict], page: int = 1, city: str = "gomel") -> str:
     if not history:
         return "Пока нет данных."
 
     page_items, total_pages = paginate(history, page, _PER_PAGE)
 
-    lines = [f"📜 <b>История USD/RUB · Гомель</b>  <i>(стр. {page}/{total_pages})</i>\n"]
+    lines = [f"📜 <b>История USD/RUB · {config.CITY_NAMES[city]}</b>  <i>(стр. {page}/{total_pages})</i>\n"]
 
     for i, entry in enumerate(page_items):
         rate = entry["rate"]

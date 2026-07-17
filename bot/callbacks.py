@@ -9,6 +9,10 @@ class SettingsCallback(CallbackData, prefix="settings"):
     action: str
 
 
+class CityCallback(CallbackData, prefix="city"):
+    city: str
+
+
 class PageCallback(CallbackData, prefix="page"):
     action: str  # "rate" | "history"
     page: int

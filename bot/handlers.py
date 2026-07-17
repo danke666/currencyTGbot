@@ -15,7 +15,7 @@ from services.rate_service import (
     paginate,
 )
 from services.parser import parse_bank_rates
-from bot.callbacks import MenuCallback, PageCallback, SettingsCallback
+from bot.callbacks import CityCallback, MenuCallback, PageCallback, SettingsCallback
 from bot.keyboards import (
     main_reply_keyboard,
     pagination_keyboard,
@@ -23,6 +23,7 @@ from bot.keyboards import (
     top_keyboard,
     history_keyboard,
     settings_keyboard,
+    city_keyboard,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 _WELCOME_TEXT = (
-    "👋 <b>Курс USD/RUB · Гомель</b>\n\n"
+    "👋 <b>Курс USD/RUB · Гомель и Минск</b>\n\n"
     "Бот находит лучший курс покупки долларов за рубли "
     "и уведомляет при изменениях.\n\n"
     "Нажмите кнопку ниже или используйте команды 👇"
@@ -73,6 +74,10 @@ async def _ensure_user(user_id: int) -> dict:
     return user
 
 
+async def _user_city(user_id: int) -> str:
+    return (await _ensure_user(user_id))["city"]
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     await _ensure_user(message.from_user.id)
@@ -94,12 +99,13 @@ async def cmd_menu(message: Message) -> None:
 async def btn_rates(message: Message) -> None:
     wait_msg = await message.answer("⏳ Получаю курсы...")
     try:
-        rates = await parse_bank_rates(config.PARSER_URL)
+        city = await _user_city(message.from_user.id)
+        rates = await parse_bank_rates(config.CITY_URLS[city])
         if not rates:
             await wait_msg.edit_text("Не удалось получить курсы. Попробуйте позже.")
             return
         _, total_pages = paginate([r for r in rates if r.sell is not None], 1)
-        text = format_all_rates(rates, page=1)
+        text = format_all_rates(rates, page=1, city=city)
         kb = rate_keyboard()
         if total_pages > 1:
             # Combine rate keyboard row with pagination
@@ -118,11 +124,12 @@ async def btn_rates(message: Message) -> None:
 async def btn_top(message: Message) -> None:
     wait_msg = await message.answer("⏳ Получаю курсы...")
     try:
-        rates = await parse_bank_rates(config.PARSER_URL)
+        city = await _user_city(message.from_user.id)
+        rates = await parse_bank_rates(config.CITY_URLS[city])
         if not rates:
             await wait_msg.edit_text("Не удалось получить курсы. Попробуйте позже.")
             return
-        text = format_top_rates(rates)
+        text = format_top_rates(rates, city=city)
         await wait_msg.edit_text(text, parse_mode="HTML", reply_markup=top_keyboard())
     except Exception:
         logger.exception("Ошибка при получении курсов")
@@ -133,12 +140,13 @@ async def btn_top(message: Message) -> None:
 
 @router.message(F.text == "📜 История")
 async def btn_history(message: Message) -> None:
-    history = await db.get_rate_history(limit=80)  # Fetch enough for pagination
+    city = await _user_city(message.from_user.id)
+    history = await db.get_rate_history(limit=80, city=city)
     if not history:
         await message.answer("Пока нет данных. Курсы появятся после первой проверки.")
     else:
         _, total_pages = paginate(history, 1)
-        text = format_history(history, page=1)
+        text = format_history(history, page=1, city=city)
         kb = history_keyboard()
         if total_pages > 1:
             kb.inline_keyboard.extend(
@@ -154,7 +162,7 @@ async def btn_settings(message: Message) -> None:
     await _ensure_user(user_id)
     user = await db.get_user(user_id)
 
-    last_rate = await db.get_last_rate()
+    last_rate = await db.get_last_rate(user["city"])
     text = format_settings_text(user, last_rate, config.CHECK_INTERVAL_MINUTES)
     await message.answer(
         text,
@@ -168,12 +176,13 @@ async def btn_settings(message: Message) -> None:
 async def cmd_rate(message: Message) -> None:
     wait_msg = await message.answer("⏳ Получаю курсы...")
     try:
-        rates = await parse_bank_rates(config.PARSER_URL)
+        city = await _user_city(message.from_user.id)
+        rates = await parse_bank_rates(config.CITY_URLS[city])
         if not rates:
             await wait_msg.edit_text("Не удалось получить курсы. Попробуйте позже.")
             return
         _, total_pages = paginate([r for r in rates if r.sell is not None], 1)
-        text = format_all_rates(rates, page=1)
+        text = format_all_rates(rates, page=1, city=city)
         kb = rate_keyboard()
         if total_pages > 1:
             kb.inline_keyboard.extend(
@@ -247,7 +256,7 @@ async def cmd_status(message: Message) -> None:
     await _ensure_user(user_id)
     user = await db.get_user(user_id)
 
-    last_rate = await db.get_last_rate()
+    last_rate = await db.get_last_rate(user["city"])
     text = format_settings_text(user, last_rate, config.CHECK_INTERVAL_MINUTES)
     await message.answer(
         text,
@@ -274,11 +283,11 @@ async def cmd_hello(message: Message) -> None:
 async def process_menu_callback(callback: CallbackQuery, callback_data: MenuCallback) -> None:
     action = callback_data.action
     user_id = callback.from_user.id
-    await _ensure_user(user_id)
+    city = await _user_city(user_id)
 
     if action == "rate":
         try:
-            rates = await parse_bank_rates(config.PARSER_URL)
+            rates = await parse_bank_rates(config.CITY_URLS[city])
         except Exception:
             logger.exception("Ошибка при получении курсов в callback")
             await callback.answer("❌ Не удалось загрузить данные", show_alert=True)
@@ -287,7 +296,7 @@ async def process_menu_callback(callback: CallbackQuery, callback_data: MenuCall
             await callback.answer("Не удалось получить курсы", show_alert=True)
             return
         _, total_pages = paginate([r for r in rates if r.sell is not None], 1)
-        text = format_all_rates(rates, page=1)
+        text = format_all_rates(rates, page=1, city=city)
         kb = rate_keyboard()
         if total_pages > 1:
             kb.inline_keyboard.extend(
@@ -298,7 +307,7 @@ async def process_menu_callback(callback: CallbackQuery, callback_data: MenuCall
 
     elif action == "top":
         try:
-            rates = await parse_bank_rates(config.PARSER_URL)
+            rates = await parse_bank_rates(config.CITY_URLS[city])
         except Exception:
             logger.exception("Ошибка при получении курсов в callback")
             await callback.answer("❌ Не удалось загрузить данные", show_alert=True)
@@ -306,17 +315,17 @@ async def process_menu_callback(callback: CallbackQuery, callback_data: MenuCall
         if not rates:
             await callback.answer("Не удалось получить курсы", show_alert=True)
             return
-        text = format_top_rates(rates)
+        text = format_top_rates(rates, city=city)
         await _safe_edit_text(callback.message, text, top_keyboard())
         await callback.answer()
 
     elif action == "history":
-        history = await db.get_rate_history(limit=80)
+        history = await db.get_rate_history(limit=80, city=city)
         if not history:
             await callback.answer("Пока нет данных", show_alert=True)
             return
         _, total_pages = paginate(history, 1)
-        text = format_history(history, page=1)
+        text = format_history(history, page=1, city=city)
         kb = history_keyboard()
         if total_pages > 1:
             kb.inline_keyboard.extend(
@@ -331,11 +340,11 @@ async def process_menu_callback(callback: CallbackQuery, callback_data: MenuCall
             await callback.answer("Нажмите /start", show_alert=True)
             return
 
-        last_rate = await db.get_last_rate()
+        last_rate = await db.get_last_rate(city)
         text = format_settings_text(user, last_rate, config.CHECK_INTERVAL_MINUTES)
         kb = settings_keyboard(bool(user["is_active"]), bool(user["threshold"]))
-    await _safe_edit_text(callback.message, text, kb)
-    await callback.answer()
+        await _safe_edit_text(callback.message, text, kb)
+        await callback.answer()
 
 
 # ─── Inline: Pagination callbacks ─────────────────────────────────
@@ -344,10 +353,11 @@ async def process_menu_callback(callback: CallbackQuery, callback_data: MenuCall
 async def process_page_callback(callback: CallbackQuery, callback_data: PageCallback) -> None:
     action = callback_data.action
     page = callback_data.page
+    city = await _user_city(callback.from_user.id)
 
     if action == "rate":
         try:
-            rates = await parse_bank_rates(config.PARSER_URL)
+            rates = await parse_bank_rates(config.CITY_URLS[city])
         except Exception:
             logger.exception("Ошибка при получении курсов в callback")
             await callback.answer("❌ Не удалось загрузить данные", show_alert=True)
@@ -357,7 +367,7 @@ async def process_page_callback(callback: CallbackQuery, callback_data: PageCall
             return
         valid = [r for r in rates if r.sell is not None]
         _, total_pages = paginate(valid, page)
-        text = format_all_rates(rates, page=page)
+        text = format_all_rates(rates, page=page, city=city)
         kb = rate_keyboard()
         if total_pages > 1:
             kb.inline_keyboard.extend(
@@ -367,12 +377,12 @@ async def process_page_callback(callback: CallbackQuery, callback_data: PageCall
         await callback.answer()
 
     elif action == "history":
-        history = await db.get_rate_history(limit=80)
+        history = await db.get_rate_history(limit=80, city=city)
         if not history:
             await callback.answer("Пока нет данных", show_alert=True)
             return
         _, total_pages = paginate(history, page)
-        text = format_history(history, page=page)
+        text = format_history(history, page=page, city=city)
         kb = history_keyboard()
         if total_pages > 1:
             kb.inline_keyboard.extend(
@@ -400,8 +410,34 @@ async def process_settings_callback(callback: CallbackQuery, callback_data: Sett
 
     user = await db.get_user(user_id)
 
-    last_rate = await db.get_last_rate()
+    last_rate = await db.get_last_rate(user["city"])
     text = format_settings_text(user, last_rate, config.CHECK_INTERVAL_MINUTES)
     kb = settings_keyboard(bool(user["is_active"]), bool(user["threshold"]))
     await _safe_edit_text(callback.message, text, kb)
+    await callback.answer()
+
+
+@router.message(F.text == "🌆 Город")
+async def btn_city(message: Message) -> None:
+    city = await _user_city(message.from_user.id)
+    await message.answer(
+        "🌆 Выберите город для курсов, истории и уведомлений:",
+        reply_markup=city_keyboard(city),
+    )
+    await _safe_delete(message)
+
+
+@router.callback_query(CityCallback.filter())
+async def process_city_callback(callback: CallbackQuery, callback_data: CityCallback) -> None:
+    if callback_data.city not in config.CITY_URLS:
+        await callback.answer("Неизвестный город", show_alert=True)
+        return
+    await _ensure_user(callback.from_user.id)
+    await db.set_user_city(callback.from_user.id, callback_data.city)
+    city_name = config.CITY_NAMES[callback_data.city]
+    await _safe_edit_text(
+        callback.message,
+        f"✅ Выбран город: <b>{city_name}</b>",
+        city_keyboard(callback_data.city),
+    )
     await callback.answer()
