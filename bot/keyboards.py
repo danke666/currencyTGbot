@@ -27,30 +27,17 @@ def city_keyboard(current_city: str) -> InlineKeyboardMarkup:
 
 
 def rate_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🏆 Топ-3", callback_data=MenuCallback(action="top").pack()),
-            InlineKeyboardButton(text="📜 История", callback_data=MenuCallback(action="history").pack()),
-        ],
-    ])
+    """Inline controls are added only when rate pagination is needed."""
+    return InlineKeyboardMarkup(inline_keyboard=[])
 
 
-def top_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="📊 Все курсы", callback_data=MenuCallback(action="rate").pack()),
-            InlineKeyboardButton(text="📜 История", callback_data=MenuCallback(action="history").pack()),
-        ],
-    ])
+def top_keyboard() -> None:
+    return None
 
 
 def history_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="📊 Все курсы", callback_data=MenuCallback(action="rate").pack()),
-            InlineKeyboardButton(text="🏆 Топ-3", callback_data=MenuCallback(action="top").pack()),
-        ],
-    ])
+    """Inline controls are added only when history pagination is needed."""
+    return InlineKeyboardMarkup(inline_keyboard=[])
 
 
 def pagination_keyboard(action: str, current_page: int, total_pages: int) -> InlineKeyboardMarkup:

@@ -53,7 +53,7 @@ async def send_rates_rich_message(
         "chat_id": chat_id,
         "rich_message": {"html": build_rates_rich_html(rates, city)},
     }
-    if reply_markup:
+    if reply_markup and reply_markup.inline_keyboard:
         payload["reply_markup"] = reply_markup.model_dump(by_alias=True, exclude_none=True)
 
     try:
