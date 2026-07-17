@@ -5,10 +5,6 @@ class MenuCallback(CallbackData, prefix="menu"):
     action: str
 
 
-class DashboardCallback(CallbackData, prefix="dash"):
-    action: str
-
-
 class SettingsCallback(CallbackData, prefix="settings"):
     action: str
 

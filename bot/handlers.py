@@ -2,7 +2,7 @@ import logging
 
 from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
+from aiogram.types import Message, CallbackQuery
 from aiogram.exceptions import TelegramBadRequest
 
 import config
@@ -18,7 +18,8 @@ from services.rate_service import (
 )
 from services.rate_service import _esc
 from services.parser import parse_bank_rates
-from bot.callbacks import CityCallback, DashboardCallback, MenuCallback, PageCallback, SettingsCallback
+from services.rich_messages import send_rates_rich_message
+from bot.callbacks import CityCallback, MenuCallback, PageCallback, SettingsCallback
 from bot.keyboards import (
     pagination_keyboard,
     rate_keyboard,
@@ -26,8 +27,7 @@ from bot.keyboards import (
     history_keyboard,
     settings_keyboard,
     city_keyboard,
-    calculator_keyboard,
-    dashboard_keyboard,
+    main_reply_keyboard,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ async def _user_city(user_id: int) -> str:
     return (await _ensure_user(user_id))["city"]
 
 
-async def _dashboard_content(user_id: int) -> tuple[str, object]:
+async def _dashboard_content(user_id: int) -> str:
     user = await _ensure_user(user_id)
     city = user["city"]
     result = await get_best_rate(config.CITY_URLS[city])
@@ -87,30 +87,21 @@ async def _dashboard_content(user_id: int) -> tuple[str, object]:
         )
     else:
         body = f"🏠 <b>Панель управления</b>\n\nГород: <b>{city_name}</b>\n⚠️ Курс временно недоступен"
-    return body, dashboard_keyboard(bool(user["is_active"]), bool(user["threshold"]))
+    return body
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     await _ensure_user(message.from_user.id)
-    await message.answer("Панель управления открыта.", reply_markup=ReplyKeyboardRemove())
-    text, keyboard = await _dashboard_content(message.from_user.id)
-    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    text = await _dashboard_content(message.from_user.id)
+    await message.answer(text, parse_mode="HTML", reply_markup=main_reply_keyboard())
     await _safe_delete(message)
 
 
 @router.message(Command("menu"))
 async def cmd_menu(message: Message) -> None:
-    await message.answer("Панель управления открыта.", reply_markup=ReplyKeyboardRemove())
-    text, keyboard = await _dashboard_content(message.from_user.id)
-    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
-    await _safe_delete(message)
-
-
-@router.message(F.text == "🏠 Панель")
-async def btn_dashboard(message: Message) -> None:
-    text, keyboard = await _dashboard_content(message.from_user.id)
-    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    text = await _dashboard_content(message.from_user.id)
+    await message.answer(text, parse_mode="HTML", reply_markup=main_reply_keyboard())
     await _safe_delete(message)
 
 
@@ -120,85 +111,26 @@ async def btn_calculator(message: Message) -> None:
     await _safe_delete(message)
 
 
-@router.callback_query(DashboardCallback.filter())
-async def process_dashboard_callback(callback: CallbackQuery, callback_data: DashboardCallback) -> None:
-    action = callback_data.action
-    user_id = callback.from_user.id
-    user = await _ensure_user(user_id)
-    city = user["city"]
-
-    if action == "home":
-        text, keyboard = await _dashboard_content(user_id)
-        await _safe_edit_text(callback.message, text, keyboard)
-    elif action == "city":
-        await _safe_edit_text(callback.message, "🌆 Выберите город:", city_keyboard(city))
-    elif action == "settings":
-        last = await db.get_last_rate(city)
-        await _safe_edit_text(
-            callback.message,
-            format_settings_text(user, last, config.CHECK_INTERVAL_MINUTES),
-            settings_keyboard(bool(user["is_active"]), bool(user["threshold"])),
-        )
-    elif action == "toggle_notify":
-        await db.toggle_user_active(user_id, not user["is_active"])
-        text, keyboard = await _dashboard_content(user_id)
-        await _safe_edit_text(callback.message, text, keyboard)
-    elif action in {"rates", "top"}:
-        rates = await parse_bank_rates(config.CITY_URLS[city])
-        if not rates:
-            await callback.answer("Курс временно недоступен", show_alert=True)
-        elif action == "rates":
-            await _safe_edit_text(callback.message, format_all_rates(rates, city=city), rate_keyboard())
-        else:
-            await _safe_edit_text(callback.message, format_top_rates(rates, city=city), top_keyboard())
-    elif action == "calc":
-        await _safe_edit_text(
-            callback.message,
-            "🧮 <b>Сколько USD хотите купить?</b>\n\n"
-            "Выберите сумму или используйте <code>/calc 1234</code>.",
-            calculator_keyboard(),
-        )
-    elif action.startswith("calc_"):
-        amount = float(action.removeprefix("calc_"))
-        result = await get_best_rate(config.CITY_URLS[city], "buy_usd")
-        if not result:
-            await callback.answer("Курс временно недоступен", show_alert=True)
-        else:
-            total = round(amount * result.rate, 2)
-            text = (
-                f"🧮 <b>Покупка {amount:g} USD</b>\n\n"
-                f"{_esc(result.bank)} · <b>{result.rate} RUB/USD</b>\n"
-                f"К оплате: <b>{total} RUB</b>"
-            )
-            await _safe_edit_text(
-                callback.message,
-                text,
-                dashboard_keyboard(bool(user["is_active"]), bool(user["threshold"])),
-            )
-    await callback.answer()
-
-
 @router.message(F.text == "📊 Курсы")
 async def btn_rates(message: Message) -> None:
-    wait_msg = await message.answer("⏳ Получаю курсы...")
     try:
         city = await _user_city(message.from_user.id)
         rates = await parse_bank_rates(config.CITY_URLS[city])
         if not rates:
-            await wait_msg.edit_text("Не удалось получить курсы. Попробуйте позже.")
+            await message.answer("Не удалось получить курсы. Попробуйте позже.")
             return
         _, total_pages = paginate([r for r in rates if r.sell is not None], 1)
-        text = format_all_rates(rates, page=1, city=city)
         kb = rate_keyboard()
         if total_pages > 1:
-            # Combine rate keyboard row with pagination
             kb.inline_keyboard.extend(
                 pagination_keyboard("rate", 1, total_pages).inline_keyboard
             )
-        await wait_msg.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        if await send_rates_rich_message(message.bot, message.chat.id, rates, city, kb):
+            return
+        await message.answer(format_all_rates(rates, page=1, city=city), parse_mode="HTML", reply_markup=kb)
     except Exception:
         logger.exception("Ошибка при получении курсов")
-        await wait_msg.edit_text("Произошла ошибка. Попробуйте позже.")
+        await message.answer("Произошла ошибка. Попробуйте позже.")
     finally:
         await _safe_delete(message)
 
@@ -257,24 +189,24 @@ async def btn_settings(message: Message) -> None:
 
 @router.message(Command("rate"))
 async def cmd_rate(message: Message) -> None:
-    wait_msg = await message.answer("⏳ Получаю курсы...")
     try:
         city = await _user_city(message.from_user.id)
         rates = await parse_bank_rates(config.CITY_URLS[city])
         if not rates:
-            await wait_msg.edit_text("Не удалось получить курсы. Попробуйте позже.")
+            await message.answer("Не удалось получить курсы. Попробуйте позже.")
             return
         _, total_pages = paginate([r for r in rates if r.sell is not None], 1)
-        text = format_all_rates(rates, page=1, city=city)
         kb = rate_keyboard()
         if total_pages > 1:
             kb.inline_keyboard.extend(
                 pagination_keyboard("rate", 1, total_pages).inline_keyboard
             )
-        await wait_msg.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        if await send_rates_rich_message(message.bot, message.chat.id, rates, city, kb):
+            return
+        await message.answer(format_all_rates(rates, page=1, city=city), parse_mode="HTML", reply_markup=kb)
     except Exception:
         logger.exception("Ошибка при получении курсов")
-        await wait_msg.edit_text("Произошла ошибка. Попробуйте позже.")
+        await message.answer("Произошла ошибка. Попробуйте позже.")
     finally:
         await _safe_delete(message)
 
@@ -380,8 +312,8 @@ async def cmd_calc(message: Message) -> None:
 @router.message(F.text.lower().in_({"привет", "hello", "hi"}))
 async def cmd_hello(message: Message) -> None:
     await _ensure_user(message.from_user.id)
-    text, keyboard = await _dashboard_content(message.from_user.id)
-    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    text = await _dashboard_content(message.from_user.id)
+    await message.answer(text, parse_mode="HTML", reply_markup=main_reply_keyboard())
     await _safe_delete(message)
 
 
