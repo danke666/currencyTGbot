@@ -62,6 +62,14 @@ async def _check_city(bot: Bot, city: str, url: str) -> None:
         logger.warning("Не удалось получить курс для %s", city)
         return
 
+    if rates[0].is_stale_cache:
+        logger.warning(
+            "Пропускаем уведомления для %s: резервный кеш, возраст %d сек.",
+            city,
+            rates[0].cache_age_seconds,
+        )
+        return
+
     valid = [r for r in rates if r.sell is not None]
     if not valid:
         logger.warning("Нет валидных курсов для %s", city)
@@ -71,6 +79,9 @@ async def _check_city(bot: Bot, city: str, url: str) -> None:
     result = BestRate(
         bank=best.bank, rate=best.sell, address=best.address,
         branch_count=best.branch_count, is_mobile=best.is_mobile,
+        retrieved_at=best.retrieved_at, cache_age_seconds=best.cache_age_seconds,
+        is_cached=best.is_cached, is_stale_cache=best.is_stale_cache,
+        source_updated_at=best.source_updated_at,
     )
 
     last = await db.get_last_rate(city)
@@ -102,7 +113,10 @@ async def _check_city(bot: Bot, city: str, url: str) -> None:
     threshold_user_ids: set[int] = set()
     for user in users:
         threshold = user["threshold"]
-        if threshold and result.rate <= threshold:
+        crossed = threshold and result.rate <= threshold and (
+            last is None or last["rate"] > threshold
+        )
+        if crossed:
             threshold_user_ids.add(user["user_id"])
             text = base_text + f"\n\n⚡ Курс ниже вашего порога: {threshold}"
             threshold_tasks.append(_send_one(bot, user["user_id"], text))

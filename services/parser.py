@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -47,6 +50,11 @@ class BankRate:
     address: str | None = None
     branch_count: int = 1
     is_mobile: bool = False
+    retrieved_at: datetime | None = None
+    cache_age_seconds: int = 0
+    is_cached: bool = False
+    is_stale_cache: bool = False
+    source_updated_at: str | None = None
 
 
 # In-memory TTL cache is keyed by URL so different cities never share data.
@@ -65,6 +73,11 @@ def _parse_rate_value(text: str) -> float | None:
         return float(match.group())
     except ValueError:
         return None
+
+
+def _extract_update_time(text: str) -> str | None:
+    match = re.search(r"(?<!\d)([01]\d|2[0-3]):[0-5]\d(?!\d)", text)
+    return match.group(0) if match else None
 
 
 _MOBILE_KEYWORDS = ["app", "mobile", "insnc", "moby", "приложение"]
@@ -106,6 +119,11 @@ def _extract_branch_data(branch_container) -> list[dict]:
         if "currencies-courses__appointment-row" in branch_tr.get("class", []):
             continue
 
+        # Myfin explicitly labels individual outdated branch rates. They must
+        # never participate in selecting the best current offer.
+        if "устаревший курс" in branch_tr.get_text(" ", strip=True).lower():
+            continue
+
         addr_a = branch_tr.select_one("a.currencies-courses__branch-name")
         address = addr_a.get_text(strip=True) if addr_a else None
 
@@ -114,7 +132,12 @@ def _extract_branch_data(branch_container) -> list[dict]:
         sell = _parse_rate_value(rate_cells[1].get_text(strip=True)) if len(rate_cells) > 1 else None
 
         if sell is not None:
-            branches.append({"address": address, "buy": buy, "sell": sell})
+            branches.append({
+                "address": address,
+                "buy": buy,
+                "sell": sell,
+                "updated_at": _extract_update_time(branch_tr.get_text(" ", strip=True)),
+            })
 
     return branches
 
@@ -154,6 +177,7 @@ def extract_bank_rates_from_html(html: str) -> list[BankRate]:
 
             # Extract bank-wide rates from main row
             main_rate_cells = bank_row.select("td.currencies-courses__currency-cell span")
+            main_updated_at = _extract_update_time(bank_row.get_text(" ", strip=True))
             bank_buy = _parse_rate_value(main_rate_cells[0].get_text(strip=True)) if len(main_rate_cells) > 0 else None
             bank_sell = _parse_rate_value(main_rate_cells[1].get_text(strip=True)) if len(main_rate_cells) > 1 else None
 
@@ -168,6 +192,7 @@ def extract_bank_rates_from_html(html: str) -> list[BankRate]:
                             address=None,
                             branch_count=0,
                             is_mobile=True,
+                            source_updated_at=main_updated_at,
                         )
                     )
                 continue
@@ -190,6 +215,7 @@ def extract_bank_rates_from_html(html: str) -> list[BankRate]:
                                 address=None,
                                 branch_count=len(branches),
                                 is_mobile=False,
+                                source_updated_at=best["updated_at"],
                             )
                         )
                     else:
@@ -201,9 +227,15 @@ def extract_bank_rates_from_html(html: str) -> list[BankRate]:
                                 address=best["address"],
                                 branch_count=1,
                                 is_mobile=False,
+                                source_updated_at=best["updated_at"],
                             )
                         )
                     continue  # branches parsed successfully
+
+                # Do not fall back to a bank-wide value when every listed
+                # branch was rejected by Myfin itself as outdated.
+                if "устаревший курс" in branch_container.get_text(" ", strip=True).lower():
+                    continue
 
             # Fallback to main-row rate if no branches found
             if bank_sell is not None:
@@ -215,6 +247,7 @@ def extract_bank_rates_from_html(html: str) -> list[BankRate]:
                         address=None,
                         branch_count=1,
                         is_mobile=False,
+                        source_updated_at=main_updated_at,
                     )
                 )
 
@@ -346,7 +379,7 @@ async def parse_bank_rates(url: str | None = None) -> list[BankRate]:
 
     if cached is not None and (now - cached[0]) < CACHE_TTL:
         logger.debug("Returning cached rates for %s (age=%.1fs)", target_url, now - cached[0])
-        return list(cached[1])
+        return _with_freshness(cached[1], now - cached[0], is_cached=True)
 
     html = ""
     try:
@@ -358,7 +391,9 @@ async def parse_bank_rates(url: str | None = None) -> list[BankRate]:
         # Fallback to stale cache (up to 5 min old) on fetch error
         if cached is not None and (now - cached[0]) < 300:
             logger.warning("Returning stale cache for %s due to fetch error", target_url)
-            return list(cached[1])
+            return _with_freshness(
+                cached[1], now - cached[0], is_cached=True, is_stale_cache=True
+            )
         return []
 
     loop = asyncio.get_running_loop()
@@ -373,9 +408,33 @@ async def parse_bank_rates(url: str | None = None) -> list[BankRate]:
         # Fallback to stale cache on parse error
         if cached is not None and (now - cached[0]) < 300:
             logger.warning("Returning stale cache for %s due to parse error", target_url)
-            return list(cached[1])
+            return _with_freshness(
+                cached[1], now - cached[0], is_cached=True, is_stale_cache=True
+            )
 
     if rates:
+        retrieved_at = datetime.now(timezone.utc)
+        for rate in rates:
+            rate.retrieved_at = retrieved_at
         _cache[target_url] = (now, list(rates))
 
     return rates
+
+
+def _with_freshness(
+    rates: list[BankRate],
+    age_seconds: float,
+    *,
+    is_cached: bool,
+    is_stale_cache: bool = False,
+) -> list[BankRate]:
+    """Return copies with request-specific cache metadata."""
+    return [
+        replace(
+            rate,
+            cache_age_seconds=max(0, int(age_seconds)),
+            is_cached=is_cached,
+            is_stale_cache=is_stale_cache,
+        )
+        for rate in rates
+    ]

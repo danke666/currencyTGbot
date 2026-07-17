@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from aiogram import Router, F
@@ -13,7 +14,10 @@ from services.rate_service import (
     format_history,
     format_settings_text,
     paginate,
+    get_best_rate,
+    format_rate_info,
 )
+from services.rate_service import _esc
 from services.parser import parse_bank_rates
 from bot.callbacks import CityCallback, MenuCallback, PageCallback, SettingsCallback
 from bot.keyboards import (
@@ -264,6 +268,126 @@ async def cmd_status(message: Message) -> None:
         reply_markup=settings_keyboard(bool(user["is_active"]), bool(user["threshold"])),
     )
     await _safe_delete(message)
+
+
+@router.message(Command("calc"))
+async def cmd_calc(message: Message) -> None:
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Пример: /calc 1000\nПокажу, сколько RUB нужно для покупки USD.")
+        return
+    try:
+        amount = float(args[1].replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Сумма должна быть положительным числом.")
+        return
+    city = await _user_city(message.from_user.id)
+    result = await get_best_rate(config.CITY_URLS[city], "buy_usd")
+    if not result:
+        await message.answer("Не удалось получить актуальный курс.")
+        return
+    total = round(amount * result.rate, 2)
+    await message.answer(
+        f"🧮 Покупка <b>{amount:g} USD</b> в г. {config.CITY_NAMES[city]}\n\n"
+        f"Лучший курс: <b>{result.rate} RUB/USD</b>\n"
+        f"Банк: {_esc(result.bank)}\n"
+        f"Итого: <b>{total} RUB</b>\n\n{format_rate_info(result, city)}",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("sell_usd"))
+async def cmd_sell_usd(message: Message) -> None:
+    city = await _user_city(message.from_user.id)
+    result = await get_best_rate(config.CITY_URLS[city], "sell_usd")
+    if not result:
+        await message.answer("Не удалось получить актуальный курс.")
+        return
+    await message.answer(
+        f"💵 Лучший курс продажи USD банку · {config.CITY_NAMES[city]}\n\n"
+        f"<b>{result.rate} RUB/USD</b>\nБанк: {_esc(result.bank)}",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("compare"))
+async def cmd_compare(message: Message) -> None:
+    results = await asyncio.gather(
+        *(get_best_rate(url, "buy_usd") for url in config.CITY_URLS.values()),
+        return_exceptions=True,
+    )
+    lines = ["⚖️ <b>Сравнение лучших курсов покупки USD</b>\n"]
+    valid = []
+    for city, result in zip(config.CITY_URLS, results):
+        if isinstance(result, Exception) or result is None:
+            lines.append(f"{config.CITY_NAMES[city]}: нет данных")
+            continue
+        valid.append(result.rate)
+        lines.append(f"{config.CITY_NAMES[city]}: <b>{result.rate} RUB/USD</b> · {_esc(result.bank)}")
+    if len(valid) >= 2:
+        lines.append(f"\nРазница: <b>{round(max(valid) - min(valid), 4)} RUB/USD</b>")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("health"))
+async def cmd_health(message: Message) -> None:
+    city = await _user_city(message.from_user.id)
+    result = await get_best_rate(config.CITY_URLS[city])
+    db_status = "✅ доступна" if await db.get_user(message.from_user.id) else "⚠️ не инициализирована"
+    if result:
+        await message.answer(
+            f"🩺 <b>Состояние бота</b>\n\nБаза: {db_status}\n"
+            f"Парсер {config.CITY_NAMES[city]}: ✅ работает\n"
+            f"Курс: <b>{result.rate}</b>\n"
+            f"Кеш: {'да' if result.is_cached else 'нет'}\n"
+            f"Резервный кеш: {'да' if result.is_stale_cache else 'нет'}",
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer(f"🩺 База: {db_status}\nПарсер: ❌ не отвечает")
+
+
+@router.message(Command("stats"))
+async def cmd_stats(message: Message) -> None:
+    city = await _user_city(message.from_user.id)
+    history = await db.get_rate_history(limit=500, city=city)
+    values = [float(item["rate"]) for item in history]
+    if not values:
+        await message.answer("📈 Пока недостаточно данных для статистики.")
+        return
+    best = min(values)
+    worst = max(values)
+    average = round(sum(values) / len(values), 4)
+    first = values[-1]
+    last = values[0]
+    change = round(last - first, 4)
+    direction = "📈 рост" if change > 0 else "📉 снижение" if change < 0 else "➡️ без изменений"
+    await message.answer(
+        f"📈 <b>Статистика · {config.CITY_NAMES[city]}</b>\n\n"
+        f"Проверок: <b>{len(values)}</b>\n"
+        f"Минимум: <b>{best}</b> RUB/USD\n"
+        f"Максимум: <b>{worst}</b> RUB/USD\n"
+        f"Среднее: <b>{average}</b> RUB/USD\n"
+        f"Изменение за период: <b>{change:+g}</b> ({direction})",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("pair"))
+async def cmd_pair(message: Message) -> None:
+    args = message.text.split()
+    pair = args[1].lower().replace("/", "") if len(args) > 1 else "usdrub"
+    if pair not in config.PAIR_URLS:
+        await message.answer("Доступно: /pair usdrub, /pair usd, /pair eur, /pair rub")
+        return
+    rates = await parse_bank_rates(config.PAIR_URLS[pair])
+    if not rates:
+        await message.answer("Не удалось получить курсы этой валюты.")
+        return
+    city = await _user_city(message.from_user.id)
+    await message.answer(format_all_rates(rates, city=city).replace("USD/RUB", pair.upper()), parse_mode="HTML")
 
 
 @router.message(F.text.lower().in_({"привет", "hello", "hi"}))

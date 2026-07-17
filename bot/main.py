@@ -22,6 +22,12 @@ _COMMANDS = [
     BotCommand(command="set_threshold", description="⚡ Порог уведомления"),
     BotCommand(command="off_threshold", description="❌ Сбросить порог"),
     BotCommand(command="notify", description="🔔 Вкл/выкл уведомления"),
+    BotCommand(command="calc", description="🧮 Рассчитать обмен"),
+    BotCommand(command="compare", description="⚖️ Сравнить города"),
+    BotCommand(command="sell_usd", description="💵 Лучший курс продажи USD"),
+    BotCommand(command="health", description="🩺 Состояние бота"),
+    BotCommand(command="stats", description="📈 Статистика курса"),
+    BotCommand(command="pair", description="💱 Другая валютная пара"),
 ]
 
 

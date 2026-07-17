@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import config
 from services.parser import BankRate, parse_bank_rates
@@ -18,31 +20,43 @@ class BestRate:
     address: str | None = None
     branch_count: int = 1
     is_mobile: bool = False
+    retrieved_at: datetime | None = None
+    cache_age_seconds: int = 0
+    is_cached: bool = False
+    is_stale_cache: bool = False
+    source_updated_at: str | None = None
 
 
-async def get_best_rate(url: str | None = None) -> BestRate | None:
+async def get_best_rate(url: str | None = None, direction: str = "buy_usd") -> BestRate | None:
     rates = await parse_bank_rates(url)
     if not rates:
         logger.error("Нет данных о курсах")
         return None
 
     best: BankRate | None = None
-    best_value: float = float("inf")
+    best_value: float = float("inf") if direction == "buy_usd" else float("-inf")
     for r in rates:
-        if r.sell is not None and r.sell < best_value:
+        value = r.sell if direction == "buy_usd" else r.buy
+        if value is not None and ((direction == "buy_usd" and value < best_value) or
+                                  (direction == "sell_usd" and value > best_value)):
             best = r
-            best_value = r.sell
+            best_value = value
 
-    if best is None or best.sell is None:
+    if best is None or (best.sell if direction == "buy_usd" else best.buy) is None:
         logger.error("Не найден курс продажи")
         return None
 
     return BestRate(
         bank=best.bank,
-        rate=best.sell,
+        rate=best.sell if direction == "buy_usd" else best.buy,
         address=best.address,
         branch_count=best.branch_count,
         is_mobile=best.is_mobile,
+        retrieved_at=best.retrieved_at,
+        cache_age_seconds=best.cache_age_seconds,
+        is_cached=best.is_cached,
+        is_stale_cache=best.is_stale_cache,
+        source_updated_at=best.source_updated_at,
     )
 
 
@@ -73,6 +87,24 @@ def _format_address_line(rate: BankRate | BestRate, city_name: str) -> str | Non
     return None
 
 
+def format_freshness(rate: BankRate | BestRate) -> str | None:
+    """Human-readable provenance and age of a parsed rate."""
+    if rate.retrieved_at is None:
+        return None
+    local_time = rate.retrieved_at.astimezone(ZoneInfo("Europe/Minsk")).strftime("%d.%m.%Y %H:%M:%S")
+    if rate.is_stale_cache:
+        status = f"⚠️ резервный кеш, возраст {rate.cache_age_seconds} сек."
+    elif rate.is_cached:
+        status = f"✅ кеш, возраст {rate.cache_age_seconds} сек."
+    else:
+        status = "✅ загружено сейчас"
+    return (
+        f"🕒 Получено: <code>{local_time}</code> · {status}\n"
+        + (f"🏦 Обновление банка на Myfin: <code>{rate.source_updated_at}</code>\n" if rate.source_updated_at else "")
+        + f"🔗 Источник: <a href=\"https://myfin.by/\">Myfin.by</a>"
+    )
+
+
 def format_settings_text(user: dict, last_rate: dict | None, interval: int) -> str:
     """Return unified settings text."""
     status = "✅ Активны" if user["is_active"] else "❌ Выключены"
@@ -98,6 +130,9 @@ def format_rate_info(result: BestRate, city: str = "gomel") -> str:
     addr = _format_address_line(result, config.CITY_NAMES[city])
     if addr:
         lines.append(addr)
+    freshness = format_freshness(result)
+    if freshness:
+        lines.append(freshness)
     return "\n".join(lines)
 
 
@@ -136,6 +171,9 @@ def format_all_rates(rates: list[BankRate], page: int = 1, city: str = "gomel") 
     best = valid[0]
     lines.append(f"\n────────────────")
     lines.append(f"🏆 Лучшая покупка: <b>{_esc(best.bank)}</b> за <code>{best.sell}</code> RUB")
+    freshness = format_freshness(best)
+    if freshness:
+        lines.append(f"\n{freshness}")
 
     return "\n".join(lines)
 
@@ -160,6 +198,10 @@ def format_top_rates(rates: list[BankRate], n: int = 3, city: str = "gomel") -> 
         addr = _format_address_line(r, city_name)
         if addr:
             lines.append(f"   {addr}")
+
+    freshness = format_freshness(valid[0])
+    if freshness:
+        lines.append(f"\n{freshness}")
 
     return "\n".join(lines)
 
