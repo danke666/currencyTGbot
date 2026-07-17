@@ -1,23 +1,6 @@
-from aiogram.types import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from bot.callbacks import CityCallback, DashboardCallback, MenuCallback, PageCallback, SettingsCallback
-
-
-def main_reply_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🏠 Панель"), KeyboardButton(text="📊 Курсы")],
-            [KeyboardButton(text="🧮 Калькулятор"), KeyboardButton(text="📜 История")],
-            [KeyboardButton(text="🌆 Город"), KeyboardButton(text="⚙️ Настройки")],
-        ],
-        resize_keyboard=True,
-    )
-
 
 def city_keyboard(current_city: str) -> InlineKeyboardMarkup:
     labels = {"gomel": "Гомель", "minsk": "Минск"}

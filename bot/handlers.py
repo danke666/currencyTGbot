@@ -2,7 +2,7 @@ import logging
 
 from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.exceptions import TelegramBadRequest
 
 import config
@@ -20,7 +20,6 @@ from services.rate_service import _esc
 from services.parser import parse_bank_rates
 from bot.callbacks import CityCallback, DashboardCallback, MenuCallback, PageCallback, SettingsCallback
 from bot.keyboards import (
-    main_reply_keyboard,
     pagination_keyboard,
     rate_keyboard,
     top_keyboard,
@@ -34,16 +33,6 @@ from bot.keyboards import (
 logger = logging.getLogger(__name__)
 
 router = Router()
-
-_WELCOME_TEXT = (
-    "👋 <b>Курс USD/RUB · Гомель и Минск</b>\n\n"
-    "Бот находит лучший курс покупки долларов за рубли "
-    "и уведомляет при изменениях.\n\n"
-    "Нажмите кнопку ниже или используйте команды 👇"
-)
-
-
-
 
 async def _safe_delete(message: Message) -> None:
     try:
@@ -104,10 +93,7 @@ async def _dashboard_content(user_id: int) -> tuple[str, object]:
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     await _ensure_user(message.from_user.id)
-    await message.answer(
-        "⌨️ Нижняя клавиатура включена: выберите раздел или используйте панель ниже.",
-        reply_markup=main_reply_keyboard(),
-    )
+    await message.answer("Панель управления открыта.", reply_markup=ReplyKeyboardRemove())
     text, keyboard = await _dashboard_content(message.from_user.id)
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await _safe_delete(message)
@@ -115,7 +101,7 @@ async def cmd_start(message: Message) -> None:
 
 @router.message(Command("menu"))
 async def cmd_menu(message: Message) -> None:
-    await message.answer("⌨️ Клавиатура управления обновлена.", reply_markup=main_reply_keyboard())
+    await message.answer("Панель управления открыта.", reply_markup=ReplyKeyboardRemove())
     text, keyboard = await _dashboard_content(message.from_user.id)
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await _safe_delete(message)
@@ -394,11 +380,8 @@ async def cmd_calc(message: Message) -> None:
 @router.message(F.text.lower().in_({"привет", "hello", "hi"}))
 async def cmd_hello(message: Message) -> None:
     await _ensure_user(message.from_user.id)
-    await message.answer(
-        _WELCOME_TEXT,
-        parse_mode="HTML",
-        reply_markup=main_reply_keyboard(),
-    )
+    text, keyboard = await _dashboard_content(message.from_user.id)
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await _safe_delete(message)
 
 
